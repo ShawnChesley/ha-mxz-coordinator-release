@@ -1,0 +1,342 @@
+"""Constants for the MXZ Coordinator integration."""
+
+from __future__ import annotations
+
+DOMAIN = "mxz_coordinator"
+
+# climate is last so the number/switch siblings it drives are registered first.
+PLATFORMS: list[str] = ["number", "switch", "select", "sensor", "climate"]
+
+# --- Config-entry keys (collected in the config flow; household-specific) ---
+CONF_PRIMARY_CLIMATE = "primary_climate"
+CONF_SECONDARY_CLIMATE = "secondary_climate"
+CONF_PRIMARY_SENSOR = "primary_sensor"
+CONF_SECONDARY_SENSOR = "secondary_sensor"
+CONF_NOTIFY_SERVICE = "notify_service"
+
+# Optional vane `select` entities, mirrored onto the native thermostats so the
+# single-target tile keeps vane control (replaces the echavet proxy's vane mode).
+CONF_PRIMARY_VANE_VERTICAL = "primary_vane_vertical"
+CONF_PRIMARY_VANE_HORIZONTAL = "primary_vane_horizontal"
+CONF_SECONDARY_VANE_VERTICAL = "secondary_vane_vertical"
+CONF_SECONDARY_VANE_HORIZONTAL = "secondary_vane_horizontal"
+
+# Optional per-zone "airflow" sensor: the actual blower speed some firmwares
+# expose (CN105/ESPHome heads publish a `stage` text_sensor decoded from the
+# 0x09 power packet). Mirrored onto the tile so it shows REAL airflow while the
+# fan is handed to the firmware's own `auto` (display only — see climate.py).
+CONF_PRIMARY_STAGE = "primary_stage"
+CONF_SECONDARY_STAGE = "secondary_stage"
+# Local fork: legacy flat per-room window/door contacts (zones 0/1). Migrated
+# entries keep them on the zone dict under ZONE_CONTACTS instead.
+CONF_PRIMARY_CONTACTS = "primary_contacts"
+CONF_SECONDARY_CONTACTS = "secondary_contacts"
+
+# --- N-zone config (entry VERSION 2) ---
+# entry.data["zones"] = ordered list of zone dicts; LIST ORDER = standoff priority
+# (index 0 = highest, the "primary wins" generalization).
+CONF_ZONES = "zones"
+ZONE_NAME = "name"
+ZONE_CLIMATE = "climate"
+ZONE_SENSOR = "sensor"
+ZONE_VANE_VERTICAL = "vane_vertical"
+ZONE_VANE_HORIZONTAL = "vane_horizontal"
+ZONE_STAGE_SENSOR = "stage_sensor"
+ZONE_CONTACTS = "contacts"  # local fork: window/door binary_sensors for this room
+MIN_ZONES = 2
+MAX_ZONES = 8
+
+
+def zone_slug(index: int) -> str:
+    """Stable per-zone slug used in unique_ids and plan keys.
+
+    Zones 0/1 keep the legacy "primary"/"secondary" slugs so existing 2-zone
+    installs migrate with ZERO entity-registry churn; zones beyond get zone_N
+    (1-based, so the third zone is ``zone_3``).
+    """
+    if index == 0:
+        return "primary"
+    if index == 1:
+        return "secondary"
+    return f"zone_{index + 1}"
+
+# --- Options keys (tunable constants; were hardcoded in the YAML package) ---
+CONF_DEMAND_THRESHOLD = "demand_threshold"
+CONF_ENGAGE_DEADBAND = "engage_deadband"
+CONF_MODE_HYSTERESIS = "mode_hysteresis"
+CONF_ECO_COOL_MAX = "eco_cool_max"
+CONF_ECO_HEAT_MIN = "eco_heat_min"
+CONF_CLAMP_MIN = "clamp_min"
+CONF_CLAMP_MAX = "clamp_max"
+CONF_RESTING_MODE_BIAS = "resting_mode_bias"
+CONF_HEAT_LOCKOUT_FLOOR = "heat_lockout_floor"
+CONF_COOL_LOCKOUT_CEILING = "cool_lockout_ceiling"
+# Optional local-weather seasonal changeover (auto-drives the lockout switches).
+CONF_CHANGEOVER_ENTITY = "changeover_entity"
+CONF_CHANGEOVER_HEAT_ABOVE = "changeover_heat_above"
+CONF_CHANGEOVER_COOL_BELOW = "changeover_cool_below"
+# Per-room emergency heat + exempt-cooling early stop (v3.4.0).
+CONF_EMERGENCY_RECOVERY = "emergency_recovery"
+CONF_EMERGENCY_SENSOR_GRACE = "emergency_sensor_grace"
+CONF_EXEMPT_COOL_STOP_OFFSET = "exempt_cool_stop_offset"
+# Optional delta-proportional "fan boost" (Tesla-style: bigger off-target -> faster fan).
+CONF_FAN_BOOST_ENABLE = "fan_boost_enable"
+CONF_FAN_BOOST_MAX = "fan_boost_max"
+
+# --- Defaults (match packages/mxz_coordinator.yaml exactly) ---
+DEFAULT_DEMAND_THRESHOLD = 3.0  # S — off-target °F before the SHARED MODE may flip
+DEFAULT_ENGAGE_DEADBAND = 1.0  # D — off-target °F before a head actively runs
+DEFAULT_MODE_HYSTERESIS = 600  # seconds minimum dwell before a heat<->cool flip
+DEFAULT_ECO_COOL_MAX = 78.0  # away/eco cool extreme
+DEFAULT_ECO_HEAT_MIN = 50.0  # away/eco heat extreme
+DEFAULT_CLAMP_MIN = 59  # firmware min setpoint
+DEFAULT_CLAMP_MAX = 88  # firmware max setpoint
+DEFAULT_HEAT_LOCKOUT_FLOOR = 58.0  # heat-lockout safety floor: heat below this even if locked
+DEFAULT_COOL_LOCKOUT_CEILING = 80.0  # cool-lockout safety ceiling: cool above this even if locked
+DEFAULT_CHANGEOVER_HEAT_ABOVE = 68.0  # forecast daily high (°F) at/above -> heat-lockout on
+DEFAULT_CHANGEOVER_COOL_BELOW = 50.0  # forecast daily high (°F) at/below -> cool-lockout on
+DEFAULT_EMERGENCY_RECOVERY = 2.0  # exit emergency at floor + this (°F)
+DEFAULT_EMERGENCY_SENSOR_GRACE = 10  # minutes an emergency holds on an invalid sensor
+DEFAULT_EXEMPT_COOL_STOP_OFFSET = 1.0  # exempt cooling (while cool-locked) stops at target + this
+# A latch restored after a restart is dropped if it was entered longer ago than this.
+EMERGENCY_RESTORE_MAX_AGE = 6 * 3600  # seconds
+CHANGEOVER_INTERVAL_MINUTES = 60  # how often to re-read the changeover weather signal
+
+# --- Fan boost: drive the head's fan speed by how far the room is off-target ---
+# The head's raw HA fan_modes list is UNSORTED. True airflow slowest->fastest is
+#   quiet < low < medium < MIDDLE < high   (trap: "middle" is FASTER than "medium").
+# "auto" is the firmware's own weak ramp we override. MAX = "high".
+FAN_AUTO = "auto"
+FAN_QUIET = "quiet"
+FAN_LOW = "low"
+FAN_MEDIUM = "medium"
+FAN_MIDDLE = "middle"
+FAN_HIGH = "high"
+# Ascending true airflow speed; idx 0..4.
+FAN_LADDER = (FAN_QUIET, FAN_LOW, FAN_MEDIUM, FAN_MIDDLE, FAN_HIGH)
+# delta (°F off-target) >= up_at[i] to step UP into rung i+1
+FAN_BOOST_UP_AT = (1.0, 2.0, 3.0, 4.0)
+# up_at - 0.5 hysteresis; leave rung i once delta < down_at[i-1]
+FAN_BOOST_DOWN_AT = (0.5, 1.5, 2.5, 3.5)
+# ON by default since v2.10.0/v3.0.0 (opt-out via the Configure dialog) — it's simply a
+# better experience than the firmware's weak "auto" ramp. An explicitly-saved
+# False in an entry's options is always honored.
+DEFAULT_FAN_BOOST_ENABLE = True
+DEFAULT_FAN_BOOST_MAX = FAN_HIGH
+
+# --- Airflow (stage) sensor -> settable fan token, for LIVE display only ------
+# CN105/ESPHome heads publish the actual blower speed as a `stage` text_sensor
+# (decoded from the 0x09 power packet — see echavet MitsubishiCN105ESPHome
+# README ~line 902, "actual fan speed of the indoor unit"). It reports SEVEN
+# granular stages, but the head only accepts FIVE settable speeds, so this map
+# is approximate & monotonic (7-vs-5 mismatch: two stages collapse onto `quiet`,
+# and DIFFUSE — the low-airflow wide-throw mode — maps to `low`, not a top rung).
+# Values arrive uppercase from ESPHome; we normalize case/whitespace before
+# lookup. Used ONLY to make the tile honest while the fan is in firmware `auto`;
+# it never influences what the coordinator commands.
+STAGE_TO_FAN = {
+    "IDLE": FAN_QUIET,
+    "LOW": FAN_QUIET,
+    "GENTLE": FAN_LOW,
+    "MEDIUM": FAN_MEDIUM,
+    "MODERATE": FAN_MIDDLE,
+    "HIGH": FAN_HIGH,
+    "DIFFUSE": FAN_LOW,
+}
+
+# Resting-mode bias: which shared mode to settle on when NO room is calling.
+#   "last" (default) -> hold whatever was last called (original behavior).
+#   "cool"/"heat"    -> always rest in that mode, so the system won't sit idle in
+#                       the wrong mode for the season. A genuine opposite demand
+#                       (room past its demand threshold) still flips the mode; the
+#                       bias only sets the *neutral* resting mode, it never blocks a call.
+RESTING_BIAS_LAST = "last"
+RESTING_BIAS_COOL = "cool"
+RESTING_BIAS_HEAT = "heat"
+RESTING_BIAS_OPTIONS = (RESTING_BIAS_LAST, RESTING_BIAS_COOL, RESTING_BIAS_HEAT)
+DEFAULT_RESTING_MODE_BIAS = RESTING_BIAS_LAST
+
+# --- External inhibit / low-power standby (grid-down, load-shed, DR) ----------
+# An optional watched entity (a grid-status binary_sensor, a load-shed switch, a
+# "vacation" boolean, ...): while it reads ``inhibit_active_state`` the
+# coordinator parks its heads in a low-power hold and self-restores on release.
+# Orthogonal to the enable kill-switch, so there is NO prior state to snapshot.
+# A dropout of the watched entity (unavailable/unknown/missing) reads as NOT
+# held — fail toward normal coordination; a stuck sensor must never park the
+# house.
+CONF_INHIBIT_ENTITY = "inhibit_entity"
+CONF_INHIBIT_ACTIVE_STATE = "inhibit_active_state"
+CONF_INHIBIT_ACTION = "inhibit_action"
+INHIBIT_ACTION_OFF = "off"  # zero draw, no protection
+INHIBIT_ACTION_FAN_ONLY = "fan_only"  # circulate only
+INHIBIT_ACTION_ECO = "eco"  # protection-only band: low draw AND freeze-safe
+INHIBIT_ACTION_OPTIONS = (
+    INHIBIT_ACTION_OFF,
+    INHIBIT_ACTION_FAN_ONLY,
+    INHIBIT_ACTION_ECO,
+)
+DEFAULT_INHIBIT_ACTION = INHIBIT_ACTION_ECO  # freeze-safe beats lowest-draw
+DEFAULT_INHIBIT_ACTIVE_STATE = "on"  # grid sensors are often inverted -> "off"
+
+# --- Idle action: how a non-running head parks ---------------------------------
+# A satisfied room (or a standoff loser parked by a shared-mode mismatch) idles
+# in fan_only by default. On a wet coil after cooling, that airflow carries the
+# coil smell into the room — "off" stops the fan and lets the head close its
+# vanes instead. NOTE: "off" is NOT a tighter refrigerant seal; MXZ outdoor
+# units bleed refrigerant through idle heads either way (oil return, and the
+# SW5-7/8 dip options) — the only thing this changes is airflow.
+# "off_after_dry" idles in fan_only for a coil-dry period after ACTIVE COOLING
+# (heat leaves no wet coil), then powers off — so the coil isn't sealed wet.
+CONF_IDLE_ACTION = "idle_action"
+IDLE_ACTION_FAN_ONLY = "fan_only"  # circulate (original behavior)
+IDLE_ACTION_OFF = "off"  # fan stops, vanes close
+IDLE_ACTION_OFF_AFTER_DRY = "off_after_dry"  # dry the coil first, then off
+IDLE_ACTION_OPTIONS = (
+    IDLE_ACTION_FAN_ONLY,
+    IDLE_ACTION_OFF,
+    IDLE_ACTION_OFF_AFTER_DRY,
+)
+DEFAULT_IDLE_ACTION = IDLE_ACTION_FAN_ONLY
+CONF_COIL_DRY_MINUTES = "coil_dry_minutes"
+DEFAULT_COIL_DRY_MINUTES = 10
+
+# Local fork: window/door pause (see window_pause.py). A room with any contact
+# open this long is paused (no heat, no cool) until every contact is closed.
+CONF_WINDOW_PAUSE_DELAY = "window_pause_delay"  # seconds
+DEFAULT_WINDOW_PAUSE_DELAY = 600
+EVENT_WINDOW = "mxz_coordinator_window"
+
+# Target setpoint number bounds (input_number hvac_*_target in the YAML)
+TARGET_MIN = 55
+TARGET_MAX = 85
+TARGET_STEP = 1
+TARGET_DEFAULT = 70
+
+# Eco setpoint edges when a head runs in eco (from the actuator script)
+ECO_COOL_HIGH = 78
+ECO_COOL_LOW = 76
+ECO_HEAT_HIGH = 61
+ECO_HEAT_LOW = 59
+
+# --- Unit profiles -----------------------------------------------------------
+# The coordinator operates entirely in the Home Assistant SYSTEM temperature
+# unit (room sensors and head setpoints already arrive in that unit). The
+# decision math in logic.py is pure-numeric, so the only unit-dependent things
+# are DEFAULT tunables, the setpoint band width, the eco edges, the target
+# default, and the display resolution. A °F system is byte-for-byte unchanged
+# (the °F profile reproduces every legacy DEFAULT_*); a °C system gets clean
+# round metric values and 0.5° resolution instead of nonsensical °F numbers.
+_UNIT_PROFILE_FAHRENHEIT = {
+    "target_default": float(TARGET_DEFAULT),  # 70 °F
+    "target_step": 1.0,
+    "setpoint_band": 2.0,  # cool -> (t-2, t); heat -> (t, t+2)
+    "eco_cool": (float(ECO_COOL_LOW), float(ECO_COOL_HIGH)),  # (76, 78)
+    "eco_heat": (float(ECO_HEAT_LOW), float(ECO_HEAT_HIGH)),  # (59, 61)
+    "fan_up_at": FAN_BOOST_UP_AT,  # (1, 2, 3, 4) °F off-target
+    "fan_down_at": FAN_BOOST_DOWN_AT,  # (0.5, 1.5, 2.5, 3.5) °F hysteresis
+    "engage_bounds": (0.5, 5.0),  # UI + load clamp for the re-engage drift
+    "emergency_floor_default": 60.0,
+    "emergency_floor_bounds": (45.0, 68.0),
+    "emergency_floor_step": 0.5,
+    "defaults": {
+        CONF_EMERGENCY_RECOVERY: DEFAULT_EMERGENCY_RECOVERY,
+        CONF_EXEMPT_COOL_STOP_OFFSET: DEFAULT_EXEMPT_COOL_STOP_OFFSET,
+        CONF_DEMAND_THRESHOLD: DEFAULT_DEMAND_THRESHOLD,
+        CONF_ENGAGE_DEADBAND: DEFAULT_ENGAGE_DEADBAND,
+        CONF_ECO_COOL_MAX: DEFAULT_ECO_COOL_MAX,
+        CONF_ECO_HEAT_MIN: DEFAULT_ECO_HEAT_MIN,
+        CONF_CLAMP_MIN: DEFAULT_CLAMP_MIN,
+        CONF_CLAMP_MAX: DEFAULT_CLAMP_MAX,
+        CONF_HEAT_LOCKOUT_FLOOR: DEFAULT_HEAT_LOCKOUT_FLOOR,
+        CONF_COOL_LOCKOUT_CEILING: DEFAULT_COOL_LOCKOUT_CEILING,
+        CONF_CHANGEOVER_HEAT_ABOVE: DEFAULT_CHANGEOVER_HEAT_ABOVE,
+        CONF_CHANGEOVER_COOL_BELOW: DEFAULT_CHANGEOVER_COOL_BELOW,
+    },
+}
+_UNIT_PROFILE_CELSIUS = {
+    "target_default": 21.0,  # ~70 °F
+    "target_step": 0.5,  # mini-splits accept 0.5 °C steps
+    "setpoint_band": 1.0,  # cool -> (t-1, t); heat -> (t, t+1)
+    "eco_cool": (24.0, 26.0),
+    "eco_heat": (15.0, 16.0),
+    "fan_up_at": (0.5, 1.0, 1.5, 2.0),  # °C off-target
+    "fan_down_at": (0.25, 0.75, 1.25, 1.75),  # °C hysteresis
+    "engage_bounds": (0.25, 2.5),  # UI + load clamp for the re-engage drift
+    "emergency_floor_default": 15.5,
+    "emergency_floor_bounds": (7.0, 20.0),
+    "emergency_floor_step": 0.5,
+    "defaults": {
+        CONF_EMERGENCY_RECOVERY: 1.0,
+        CONF_EXEMPT_COOL_STOP_OFFSET: 0.5,
+        CONF_DEMAND_THRESHOLD: 1.5,
+        CONF_ENGAGE_DEADBAND: 0.5,
+        CONF_ECO_COOL_MAX: 26.0,
+        CONF_ECO_HEAT_MIN: 10.0,
+        CONF_CLAMP_MIN: 15,
+        CONF_CLAMP_MAX: 31,
+        CONF_HEAT_LOCKOUT_FLOOR: 14.0,
+        CONF_COOL_LOCKOUT_CEILING: 27.0,
+        CONF_CHANGEOVER_HEAT_ABOVE: 20.0,
+        CONF_CHANGEOVER_COOL_BELOW: 10.0,
+    },
+}
+
+
+def unit_profile(celsius: bool) -> dict:
+    """Return the tunable/resolution profile for the HA system temperature unit."""
+    return _UNIT_PROFILE_CELSIUS if celsius else _UNIT_PROFILE_FAHRENHEIT
+
+# Vane "kick": a vane change while a head is OFF can't physically move the
+# louvre (and the firmware forgets the position on power-up), so the
+# coordinator briefly runs the head in fan_only to apply it, then hands the
+# head back to the plan (off again in eco/away).
+VANE_KICK_SPINUP = 8  # s after fan_only before commanding the vane
+VANE_KICK_APPLY = 20  # s for the louvre to travel before switching back off
+
+# Heartbeat / drift re-assert interval (time_pattern "/15" in the YAML)
+HEARTBEAT_MINUTES = 15
+
+# Self-heal debounce windows (YAML `for:` durations)
+BAND_DRIFT_DELAY = 20  # head in heat_cool/auto/dry this long -> re-apply
+OFF_WHILE_ENABLED_DELAY = 30  # head off while enabled this long -> re-apply
+STARTUP_RECOVER_DELAY = 40  # after HA start, wait this long then recompute
+
+# Modes a head must never sit in (drift); the coordinator owns these transitions.
+BANNED_MODES = ("heat_cool", "auto", "dry")
+
+# Recompute trigger event (kept for echavet mitsubishi_climate_proxy interop)
+EVENT_RECOMPUTE = "mxz_recompute"
+SERVICE_RECOMPUTE = "recompute"
+
+# Plan "state" / engage sentinel values
+MODE_COOL = "cool"
+MODE_HEAT = "heat"
+MODE_FAN_ONLY = "fan_only"
+MODE_OFF = "off"
+DEMAND_NEUTRAL = "neutral"
+ENGAGE_SATISFIED = "satisfied"
+
+# Per-room direction (local fork, 2026-10-17). Which way a room may ask the
+# shared outdoor unit to go. ``heat_cool`` is the original two-sided single
+# target (heat below target - drift, cool above target + drift). ``heat`` and
+# ``cool`` are ONE-SIDED: the room only ever asks for that direction and coasts
+# otherwise -- a blocked request in one direction never turns into the other.
+# Shared-mode arbitration is unchanged; the room's call simply never contains
+# the other direction. Eco extremes and the emergency floor are protections,
+# not comfort calls, and are deliberately NOT restricted by direction.
+DIRECTION_AUTO = "heat_cool"
+DIRECTION_HEAT = MODE_HEAT
+DIRECTION_COOL = MODE_COOL
+DIRECTIONS = (DIRECTION_AUTO, DIRECTION_HEAT, DIRECTION_COOL)
+
+# Global helper entity keys (used for unique_id suffixes and translation keys).
+# Per-zone entities build theirs from zone_slug() instead, and translate through
+# the generic zone_* keys with the zone's name substituted in.
+KEY_COORDINATOR_ENABLE = "coordinator_enable"
+KEY_ECO_IDLE = "eco_idle"
+KEY_HEAT_LOCKOUT = "heat_lockout"
+KEY_COOL_LOCKOUT = "cool_lockout"
+KEY_SHARED_MODE = "shared_mode"
+KEY_PLAN = "plan"
+
+UNAVAILABLE_STATES = ("unknown", "unavailable", "none", "")

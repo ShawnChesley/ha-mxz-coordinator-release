@@ -1,0 +1,41 @@
+name: CA compatibility
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-ha:
+    name: HA 2026.10.2 / CA 0.7.106
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: gunkl/ClimateAdvisor
+          ref: cb6d340de82cb6fffc9ff8f7addb03603f7b7b75 # v0.7.106
+          path: ca-source
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install matching official HA harness
+        run: pip install homeassistant==2026.10.2 pytest-homeassistant-custom-component==0.13.373 'anthropic>=0.49.0' ruff==0.16.0
+      - run: pip check
+      - name: Run MXZ suite
+        run: python -m pytest tests/ -q --tb=long
+      - name: Run stock CA against MXZ
+        run: python tools/run_ca_compat.py "$GITHUB_WORKSPACE/ca-source"
+      - name: Record resolved dependencies
+        if: always()
+        run: pip freeze > test-environment.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compatibility-environment
+          path: test-environment.txt

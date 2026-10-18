@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    # Branches only — a tag push points at a commit already validated on its
+    # branch (checks attach to the SHA, so the release still shows green). This
+    # avoids a redundant second run that only re-rolls transient HACS-action /
+    # GitHub-API flakiness. NOTE: keep hacs/action@main (HACS validates against
+    # its live ruleset; the only pinnable tag, 22.5.0, is 4+ years stale).
+    branches:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  hassfest:
+    name: hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration
+          # Brand icons ship locally in custom_components/mxz_coordinator/brand/
+          # (HA 2026.3+ self-serves custom-integration brands; the brands repo no
+          # longer accepts custom PRs), so the brands check runs with no ignore.
+
+  ruff:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff==0.16.0
+      - run: ruff check custom_components/ tests/
+
+  pytest:
+    name: pytest (${{ matrix.lane }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Declared minimum: hacs.json "homeassistant": "2024.12.0".
+          - lane: py3.12-ha2024.12.0
+            python-version: "3.12"
+            constraints: requirements/constraints-py312-ha2024.12.0.txt
+          # HA 2026.9.0 on Python 3.14 is outside this matrix: testing retains
+          # one parked-head timer failure, test_plan_parked_off_head_never_arms_heal.
+          - lane: py3.13-ha2026.2.3
+            python-version: "3.13"
+            constraints: requirements/constraints-py313-ha2026.2.3.txt
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -c ${{ matrix.constraints }} -r requirements_test.txt
+      - run: pip check
+      - run: pytest tests/ -q
+
+  yamllint:
+    name: yamllint (legacy package)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install yamllint==1.38.0
+      - run: yamllint -c .yamllint packages/ examples/

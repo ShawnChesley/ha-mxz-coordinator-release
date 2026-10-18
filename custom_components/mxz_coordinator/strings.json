@@ -1,0 +1,357 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "MXZ Coordinator",
+        "description": "Pick every indoor head on this MXZ outdoor unit (2–8). ORDER IS PRIORITY: the first head wins a heat-vs-cool standoff. Vane controls are detected automatically, and every comfort setting follows right here in this flow — pre-filled with sensible defaults. For a second outdoor unit, add the integration again.",
+        "data": {
+          "heads": "Indoor heads (climate entities, in priority order)",
+          "notify_service": "Drift-alert notifications (optional)"
+        },
+        "data_description": {
+          "notify_service": "Who to notify when a head is knocked off its coordinated mode and the coordinator puts it back — e.g. notify.mobile_app_phone. Leave empty for no notifications.",
+          "heads": "Every indoor unit connected to THIS outdoor unit. The order matters: if two rooms ever disagree (one wants heat, one wants cool), the FIRST head in this list wins. Have a second outdoor unit? Add this integration again for it afterward."
+        }
+      },
+      "sensors": {
+        "title": "Room temperature sensors",
+        "description": "Pick the room temperature sensor for each head, in order:\n\n{heads}",
+        "data": {
+          "sensor_1": "Sensor for head 1",
+          "sensor_2": "Sensor for head 2",
+          "sensor_3": "Sensor for head 3",
+          "sensor_4": "Sensor for head 4",
+          "sensor_5": "Sensor for head 5",
+          "sensor_6": "Sensor for head 6",
+          "sensor_7": "Sensor for head 7",
+          "sensor_8": "Sensor for head 8"
+        },
+        "data_description": {
+          "sensor_1": "The thermometer the coordinator should trust for this room — a standalone sensor near where people actually sit beats the head's own reading (which runs warm when idle).",
+          "sensor_2": "The thermometer the coordinator should trust for this room — a standalone sensor near where people actually sit beats the head's own reading (which runs warm when idle).",
+          "sensor_3": "The thermometer the coordinator should trust for this room — a standalone sensor near where people actually sit beats the head's own reading (which runs warm when idle).",
+          "sensor_4": "The thermometer the coordinator should trust for this room — a standalone sensor near where people actually sit beats the head's own reading (which runs warm when idle).",
+          "sensor_5": "The thermometer the coordinator should trust for this room — a standalone sensor near where people actually sit beats the head's own reading (which runs warm when idle).",
+          "sensor_6": "The thermometer the coordinator should trust for this room — a standalone sensor near where people actually sit beats the head's own reading (which runs warm when idle).",
+          "sensor_7": "The thermometer the coordinator should trust for this room — a standalone sensor near where people actually sit beats the head's own reading (which runs warm when idle).",
+          "sensor_8": "The thermometer the coordinator should trust for this room — a standalone sensor near where people actually sit beats the head's own reading (which runs warm when idle)."
+        }
+      },
+      "tuning": {
+        "title": "Comfort tuning (all optional)",
+        "description": "Every knob, pre-filled with sensible defaults for your temperature unit — just hit Submit to accept them. You can change any of these later via the integration's Configure button.",
+        "data": {
+          "demand_threshold": "Demand threshold S (° off-target before the shared mode may flip)",
+          "engage_deadband": "Re-engage drift (how far a coasting room may wander before conditioning resumes)",
+          "mode_hysteresis": "Mode hysteresis (seconds minimum dwell before a heat↔cool flip)",
+          "eco_cool_max": "Eco cool extreme (°)",
+          "eco_heat_min": "Eco heat extreme (°)",
+          "clamp_min": "Firmware minimum setpoint (°)",
+          "clamp_max": "Firmware maximum setpoint (°)",
+          "resting_mode_bias": "Resting mode when no room is calling",
+          "heat_lockout_floor": "Heat-lockout safety floor (° — heat below this even when locked out)",
+          "cool_lockout_ceiling": "Cool-lockout safety ceiling (° — cool above this even when locked out)",
+          "changeover_entity": "Seasonal changeover weather/temperature entity (optional — auto-drives the lockouts from local weather)",
+          "changeover_heat_above": "Heat-lockout when forecast daily high ≥ (°)",
+          "changeover_cool_below": "Cool-lockout when forecast daily high ≤ (°)",
+          "fan_boost_enable": "Fan boost: drive fan speed by how far the room is from target",
+          "fan_boost_max": "Fan boost maximum speed",
+          "inhibit_entity": "Standby hold entity (optional — a grid-down/load-shed signal that parks the heads)",
+          "inhibit_active_state": "Hold when the standby entity reads this state",
+          "inhibit_action": "What held heads do during a standby hold",
+          "idle_action": "How a satisfied room's head idles",
+          "coil_dry_minutes": "Coil-dry minutes (used only by 'Off after a coil-dry period')",
+          "window_pause_delay": "Window/door pause delay (seconds)"
+        },
+        "data_description": {
+          "demand_threshold": "How far off target a room must be before the whole system may SWITCH between heating and cooling. Bigger = fewer mode changes. Most homes are fine with the default.",
+          "engage_deadband": "After a room reaches its target it coasts with the fan. This is how far it may drift before conditioning kicks back in. Enter a value between 0.5–5 °F (0.25–2.5 °C).",
+          "mode_hysteresis": "Minimum SECONDS between heating↔cooling switches — protects the compressor from rapid cycling. 600 = 10 minutes. Don't lower this unless you know why.",
+          "eco_cool_max": "In away/eco mode the system stays off unless a room gets warmer than this. Think of it as vacation overheat protection.",
+          "eco_heat_min": "In away/eco mode the system stays off unless a room gets colder than this. Vacation freeze protection.",
+          "clamp_min": "The lowest setpoint your indoor units physically accept. Only change if your model's range differs — commands outside it get rejected by the unit.",
+          "clamp_max": "The highest setpoint your indoor units physically accept.",
+          "resting_mode_bias": "When no room needs anything, which mode should the system sit in? 'Last called' is right for most; pin cool or heat if your climate only ever needs one.",
+          "heat_lockout_floor": "Even when heating is locked out for the season, a room colder than this still gets heat. A safety net, not a comfort setting.",
+          "cool_lockout_ceiling": "Even when cooling is locked out for the season, a room hotter than this still gets cooling.",
+          "changeover_entity": "Optional but recommended: pick your weather integration (or an outdoor temperature sensor) and the seasons handle themselves — heating locks out on warm days, cooling on cold ones. No weather entity? Add Home Assistant's built-in Met.no first.",
+          "changeover_heat_above": "When the forecast daily high is at or above this, heating locks out (summer behavior).",
+          "changeover_cool_below": "When the forecast daily high is at or below this, cooling locks out (winter behavior).",
+          "fan_boost_enable": "Ramps the fan harder the further a room is from target, easing off as it arrives — like a car's auto climate. Recommended on.",
+          "fan_boost_max": "The fastest fan speed the boost may use. Lower it if full blast is too loud for a bedroom.",
+          "inhibit_entity": "Optional. Point this at a grid-status sensor, load-shed switch, or a 'vacation' boolean. While it's in the active state below, the coordinator parks its heads in a low-power hold and resumes normal coordination on its own when it clears — no automations needed. If this entity drops out (unavailable/unknown), the coordinator treats it as NOT held and keeps coordinating: a stuck sensor never parks the house.",
+          "inhibit_active_state": "The state that means 'hold now' (default 'on'). Many grid sensors are inverted — they read 'off' when the grid is down — so set this to 'off' for those.",
+          "inhibit_action": "How held heads sit during a hold. 'Eco' keeps freeze/overheat protection only (very low draw, recommended); 'Off' is zero draw with no protection; 'Fan only' just circulates air.",
+          "idle_action": "'Fan only' (default) keeps air moving while a room is satisfied. 'Off' stops the fan and the head closes its vanes — no airflow over the wet coil, which is what carries the after-cooling smell. The refrigerant valve behaves the same either way. 'Off after a coil-dry period' runs the fan briefly after cooling so the coil is not sealed wet, then turns the head off.",
+          "coil_dry_minutes": "How long the fan runs after active cooling before the head turns off, so the coil dries instead of being sealed wet. Heating skips this — a heated coil is dry. Used only with 'Off after a coil-dry period'.",
+          "window_pause_delay": "How long a room's window or door may stay open before that room stops heating and cooling. The pause overrides every other input (Climate Advisor, schedules, the IR remote) until all of the room's contacts close; the room then follows its current settings."
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure heads",
+        "description": "Adjust which indoor heads this coordinator drives (2–8; ORDER IS PRIORITY — first wins a standoff). Heads kept in the SAME position keep their name, vane wiring, and target. If you REORDER heads, targets and enables stay with the priority slot, not the head — re-check each room's target afterwards.",
+        "data": {
+          "heads": "Indoor heads (climate entities, in priority order)",
+          "notify_service": "Drift-alert notifications (optional)"
+        },
+        "data_description": {
+          "heads": "Every indoor unit connected to THIS outdoor unit. The order matters: if two rooms ever disagree (one wants heat, one wants cool), the FIRST head in this list wins. Have a second outdoor unit? Add this integration again for it afterward.",
+          "notify_service": "Who to notify when a head is knocked off its coordinated mode and the coordinator puts it back — e.g. notify.mobile_app_phone. Leave empty for no notifications."
+        }
+      },
+      "reconfigure_sensors": {
+        "title": "Room temperature sensors",
+        "description": "Confirm or fix the room temperature sensor for each head, in order:\n\n{heads}",
+        "data": {
+          "sensor_1": "Sensor for head 1",
+          "sensor_2": "Sensor for head 2",
+          "sensor_3": "Sensor for head 3",
+          "sensor_4": "Sensor for head 4",
+          "sensor_5": "Sensor for head 5",
+          "sensor_6": "Sensor for head 6",
+          "sensor_7": "Sensor for head 7",
+          "sensor_8": "Sensor for head 8"
+        },
+        "data_description": {
+          "sensor_1": "The thermometer the coordinator should trust for this room — a standalone sensor near where people actually sit beats the head's own reading (which runs warm when idle).",
+          "sensor_2": "The thermometer the coordinator should trust for this room — a standalone sensor near where people actually sit beats the head's own reading (which runs warm when idle).",
+          "sensor_3": "The thermometer the coordinator should trust for this room — a standalone sensor near where people actually sit beats the head's own reading (which runs warm when idle).",
+          "sensor_4": "The thermometer the coordinator should trust for this room — a standalone sensor near where people actually sit beats the head's own reading (which runs warm when idle).",
+          "sensor_5": "The thermometer the coordinator should trust for this room — a standalone sensor near where people actually sit beats the head's own reading (which runs warm when idle).",
+          "sensor_6": "The thermometer the coordinator should trust for this room — a standalone sensor near where people actually sit beats the head's own reading (which runs warm when idle).",
+          "sensor_7": "The thermometer the coordinator should trust for this room — a standalone sensor near where people actually sit beats the head's own reading (which runs warm when idle).",
+          "sensor_8": "The thermometer the coordinator should trust for this room — a standalone sensor near where people actually sit beats the head's own reading (which runs warm when idle)."
+        }
+      }
+    },
+    "error": {
+      "duplicate_heads": "The same head was selected more than once.",
+      "need_two_heads": "Select at least two heads (a single head doesn't need a coordinator).",
+      "too_many_heads": "A single MXZ outdoor unit supports at most 8 heads."
+    },
+    "abort": {
+      "already_configured": "This pair of heads is already configured."
+    }
+  },
+  "options": {
+    "abort": {
+      "empty_options": "No settings were submitted; the existing configuration was kept."
+    },
+    "step": {
+      "init": {
+        "title": "MXZ Coordinator tuning",
+        "description": "All temperatures are in your Home Assistant unit (°C or °F); the defaults adapt to it.",
+        "data": {
+          "demand_threshold": "Demand threshold S (° off-target before the shared mode may flip)",
+          "engage_deadband": "Re-engage drift (how far a coasting room may wander before conditioning resumes)",
+          "mode_hysteresis": "Mode hysteresis (seconds minimum dwell before a heat↔cool flip)",
+          "eco_cool_max": "Eco cool extreme (°)",
+          "eco_heat_min": "Eco heat extreme (°)",
+          "clamp_min": "Firmware minimum setpoint (°)",
+          "clamp_max": "Firmware maximum setpoint (°)",
+          "resting_mode_bias": "Resting mode when no room is calling",
+          "heat_lockout_floor": "Heat-lockout safety floor (° — heat below this even when locked out)",
+          "cool_lockout_ceiling": "Cool-lockout safety ceiling (° — cool above this even when locked out)",
+          "exempt_cool_stop_offset": "Exempt-room early cooling stop",
+          "emergency_recovery": "Emergency heat recovery",
+          "emergency_sensor_grace": "Emergency sensor grace (minutes)",
+          "changeover_entity": "Seasonal changeover weather/temperature entity (optional — auto-drives the lockouts from local weather)",
+          "changeover_heat_above": "Heat-lockout when forecast daily high ≥ (°)",
+          "changeover_cool_below": "Cool-lockout when forecast daily high ≤ (°)",
+          "fan_boost_enable": "Fan boost: drive fan speed by how far the room is from target",
+          "fan_boost_max": "Fan boost maximum speed",
+          "inhibit_entity": "Standby hold entity (optional — a grid-down/load-shed signal that parks the heads)",
+          "inhibit_active_state": "Hold when the standby entity reads this state",
+          "inhibit_action": "What held heads do during a standby hold",
+          "idle_action": "How a satisfied room's head idles",
+          "coil_dry_minutes": "Coil-dry minutes (used only by 'Off after a coil-dry period')",
+          "primary_vane_vertical": "Primary vertical vane (auto-detected; override if needed)",
+          "primary_vane_horizontal": "Primary horizontal vane (auto-detected; override if needed)",
+          "primary_stage": "Primary airflow sensor (auto-detected; override if needed)",
+          "secondary_vane_vertical": "Secondary vertical vane (auto-detected; override if needed)",
+          "secondary_vane_horizontal": "Secondary horizontal vane (auto-detected; override if needed)",
+          "secondary_stage": "Secondary airflow sensor (auto-detected; override if needed)",
+          "zone_3_vane_vertical": "Zone 3 vertical vane (auto-detected; override if needed)",
+          "zone_3_vane_horizontal": "Zone 3 horizontal vane (auto-detected; override if needed)",
+          "zone_3_stage": "Zone 3 airflow sensor (auto-detected; override if needed)",
+          "zone_4_vane_vertical": "Zone 4 vertical vane (auto-detected; override if needed)",
+          "zone_4_vane_horizontal": "Zone 4 horizontal vane (auto-detected; override if needed)",
+          "zone_4_stage": "Zone 4 airflow sensor (auto-detected; override if needed)",
+          "zone_5_vane_vertical": "Zone 5 vertical vane (auto-detected; override if needed)",
+          "zone_5_vane_horizontal": "Zone 5 horizontal vane (auto-detected; override if needed)",
+          "zone_5_stage": "Zone 5 airflow sensor (auto-detected; override if needed)",
+          "zone_6_vane_vertical": "Zone 6 vertical vane (auto-detected; override if needed)",
+          "zone_6_vane_horizontal": "Zone 6 horizontal vane (auto-detected; override if needed)",
+          "zone_6_stage": "Zone 6 airflow sensor (auto-detected; override if needed)",
+          "zone_7_vane_vertical": "Zone 7 vertical vane (auto-detected; override if needed)",
+          "zone_7_vane_horizontal": "Zone 7 horizontal vane (auto-detected; override if needed)",
+          "zone_7_stage": "Zone 7 airflow sensor (auto-detected; override if needed)",
+          "zone_8_vane_vertical": "Zone 8 vertical vane (auto-detected; override if needed)",
+          "zone_8_vane_horizontal": "Zone 8 horizontal vane (auto-detected; override if needed)",
+          "zone_8_stage": "Zone 8 airflow sensor (auto-detected; override if needed)",
+          "window_pause_delay": "Window/door pause delay (seconds)",
+          "primary_contacts": "Primary window/door contacts",
+          "secondary_contacts": "Secondary window/door contacts",
+          "zone_3_contacts": "Zone 3 window/door contacts",
+          "zone_4_contacts": "Zone 4 window/door contacts",
+          "zone_5_contacts": "Zone 5 window/door contacts",
+          "zone_6_contacts": "Zone 6 window/door contacts",
+          "zone_7_contacts": "Zone 7 window/door contacts",
+          "zone_8_contacts": "Zone 8 window/door contacts"
+        },
+        "data_description": {
+          "demand_threshold": "How far off target a room must be before the whole system may SWITCH between heating and cooling. Bigger = fewer mode changes. Most homes are fine with the default.",
+          "engage_deadband": "After a room reaches its target it coasts with the fan. This is how far it may drift before conditioning kicks back in. Enter a value between 0.5–5 °F (0.25–2.5 °C).",
+          "mode_hysteresis": "Minimum SECONDS between heating↔cooling switches — protects the compressor from rapid cycling. 600 = 10 minutes. Don't lower this unless you know why.",
+          "eco_cool_max": "In away/eco mode the system stays off unless a room gets warmer than this. Think of it as vacation overheat protection.",
+          "eco_heat_min": "In away/eco mode the system stays off unless a room gets colder than this. Vacation freeze protection.",
+          "clamp_min": "The lowest setpoint your indoor units physically accept. Only change if your model's range differs — commands outside it get rejected by the unit.",
+          "clamp_max": "The highest setpoint your indoor units physically accept.",
+          "resting_mode_bias": "When no room needs anything, which mode should the system sit in? 'Last called' is right for most; pin cool or heat if your climate only ever needs one.",
+          "heat_lockout_floor": "Even when heating is locked out for the season, a room colder than this still gets heat. A safety net, not a comfort setting.",
+          "cool_lockout_ceiling": "Even when cooling is locked out for the season, a room hotter than this still gets cooling.",
+          "changeover_entity": "Optional but recommended: pick your weather integration (or an outdoor temperature sensor) and the seasons handle themselves — heating locks out on warm days, cooling on cold ones. No weather entity? Add Home Assistant's built-in Met.no first.",
+          "changeover_heat_above": "When the forecast daily high is at or above this, heating locks out (summer behavior).",
+          "changeover_cool_below": "When the forecast daily high is at or below this, cooling locks out (winter behavior).",
+          "fan_boost_enable": "Ramps the fan harder the further a room is from target, easing off as it arrives — like a car's auto climate. Recommended on.",
+          "fan_boost_max": "The fastest fan speed the boost may use. Lower it if full blast is too loud for a bedroom.",
+          "inhibit_entity": "Optional. Point this at a grid-status sensor, load-shed switch, or a 'vacation' boolean. While it's in the active state below, the coordinator parks its heads in a low-power hold and resumes normal coordination on its own when it clears — no automations needed. If this entity drops out (unavailable/unknown), the coordinator treats it as NOT held and keeps coordinating: a stuck sensor never parks the house.",
+          "inhibit_active_state": "The state that means 'hold now' (default 'on'). Many grid sensors are inverted — they read 'off' when the grid is down — so set this to 'off' for those.",
+          "inhibit_action": "How held heads sit during a hold. 'Eco' keeps freeze/overheat protection only (very low draw, recommended); 'Off' is zero draw with no protection; 'Fan only' just circulates air.",
+          "idle_action": "'Fan only' (default) keeps air moving while a room is satisfied. 'Off' stops the fan and the head closes its vanes — no airflow over the wet coil, which is what carries the after-cooling smell. The refrigerant valve behaves the same either way. 'Off after a coil-dry period' runs the fan briefly after cooling so the coil is not sealed wet, then turns the head off.",
+          "coil_dry_minutes": "How long the fan runs after active cooling before the head turns off, so the coil dries instead of being sealed wet. Heating skips this — a heated coil is dry. Used only with 'Off after a coil-dry period'.",
+          "primary_vane_vertical": "Auto-detected at setup — only change if the detection picked the wrong select entity.",
+          "primary_vane_horizontal": "Auto-detected at setup — only change if the detection picked the wrong select entity.",
+          "primary_stage": "Airflow sensor — reports the actual fan speed some firmwares expose (e.g. 'stage' on CN105/ESPHome heads); lets the thermostat show real airflow while the fan is in auto. Auto-detected at setup — only change if the detection picked the wrong sensor, or clear it if your head doesn't report airflow.",
+          "secondary_vane_vertical": "Auto-detected at setup — only change if the detection picked the wrong select entity.",
+          "secondary_vane_horizontal": "Auto-detected at setup — only change if the detection picked the wrong select entity.",
+          "secondary_stage": "Airflow sensor — reports the actual fan speed some firmwares expose (e.g. 'stage' on CN105/ESPHome heads); lets the thermostat show real airflow while the fan is in auto. Auto-detected at setup — only change if the detection picked the wrong sensor, or clear it if your head doesn't report airflow.",
+          "zone_3_vane_vertical": "Auto-detected at setup — only change if the detection picked the wrong select entity.",
+          "zone_3_vane_horizontal": "Auto-detected at setup — only change if the detection picked the wrong select entity.",
+          "zone_3_stage": "Airflow sensor — reports the actual fan speed some firmwares expose (e.g. 'stage' on CN105/ESPHome heads); lets the thermostat show real airflow while the fan is in auto. Auto-detected at setup — only change if the detection picked the wrong sensor, or clear it if your head doesn't report airflow.",
+          "zone_4_vane_vertical": "Auto-detected at setup — only change if the detection picked the wrong select entity.",
+          "zone_4_vane_horizontal": "Auto-detected at setup — only change if the detection picked the wrong select entity.",
+          "zone_4_stage": "Airflow sensor — reports the actual fan speed some firmwares expose (e.g. 'stage' on CN105/ESPHome heads); lets the thermostat show real airflow while the fan is in auto. Auto-detected at setup — only change if the detection picked the wrong sensor, or clear it if your head doesn't report airflow.",
+          "zone_5_vane_vertical": "Auto-detected at setup — only change if the detection picked the wrong select entity.",
+          "zone_5_vane_horizontal": "Auto-detected at setup — only change if the detection picked the wrong select entity.",
+          "zone_5_stage": "Airflow sensor — reports the actual fan speed some firmwares expose (e.g. 'stage' on CN105/ESPHome heads); lets the thermostat show real airflow while the fan is in auto. Auto-detected at setup — only change if the detection picked the wrong sensor, or clear it if your head doesn't report airflow.",
+          "zone_6_vane_vertical": "Auto-detected at setup — only change if the detection picked the wrong select entity.",
+          "zone_6_vane_horizontal": "Auto-detected at setup — only change if the detection picked the wrong select entity.",
+          "zone_6_stage": "Airflow sensor — reports the actual fan speed some firmwares expose (e.g. 'stage' on CN105/ESPHome heads); lets the thermostat show real airflow while the fan is in auto. Auto-detected at setup — only change if the detection picked the wrong sensor, or clear it if your head doesn't report airflow.",
+          "zone_7_vane_vertical": "Auto-detected at setup — only change if the detection picked the wrong select entity.",
+          "zone_7_vane_horizontal": "Auto-detected at setup — only change if the detection picked the wrong select entity.",
+          "zone_7_stage": "Airflow sensor — reports the actual fan speed some firmwares expose (e.g. 'stage' on CN105/ESPHome heads); lets the thermostat show real airflow while the fan is in auto. Auto-detected at setup — only change if the detection picked the wrong sensor, or clear it if your head doesn't report airflow.",
+          "zone_8_vane_vertical": "Auto-detected at setup — only change if the detection picked the wrong select entity.",
+          "zone_8_vane_horizontal": "Auto-detected at setup — only change if the detection picked the wrong select entity.",
+          "zone_8_stage": "Airflow sensor — reports the actual fan speed some firmwares expose (e.g. 'stage' on CN105/ESPHome heads); lets the thermostat show real airflow while the fan is in auto. Auto-detected at setup — only change if the detection picked the wrong sensor, or clear it if your head doesn't report airflow.",
+          "exempt_cool_stop_offset": "While the cool lockout is on, a room with \"cool exempt\" ends a cooling run this far above its target instead of at the target (kept below the room's drift). 0 = run to target.",
+          "emergency_recovery": "A room in emergency heat keeps heating until it is this far above its emergency floor.",
+          "emergency_sensor_grace": "How long emergency heat holds when the room sensor goes unavailable, measured from when it first went unavailable (restarts do not extend it).",
+          "window_pause_delay": "How long a room's window or door may stay open before that room stops heating and cooling. The pause overrides every other input (Climate Advisor, schedules, the IR remote) until all of the room's contacts close; the room then follows its current settings.",
+          "primary_contacts": "Binary sensors for this room's windows/doors (on = open). Any one open past the pause delay pauses this room. Unavailable sensors hold the last known state.",
+          "secondary_contacts": "Binary sensors for this room's windows/doors (on = open). Any one open past the pause delay pauses this room. Unavailable sensors hold the last known state.",
+          "zone_3_contacts": "Binary sensors for this room's windows/doors (on = open). Any one open past the pause delay pauses this room. Unavailable sensors hold the last known state.",
+          "zone_4_contacts": "Binary sensors for this room's windows/doors (on = open). Any one open past the pause delay pauses this room. Unavailable sensors hold the last known state.",
+          "zone_5_contacts": "Binary sensors for this room's windows/doors (on = open). Any one open past the pause delay pauses this room. Unavailable sensors hold the last known state.",
+          "zone_6_contacts": "Binary sensors for this room's windows/doors (on = open). Any one open past the pause delay pauses this room. Unavailable sensors hold the last known state.",
+          "zone_7_contacts": "Binary sensors for this room's windows/doors (on = open). Any one open past the pause delay pauses this room. Unavailable sensors hold the last known state.",
+          "zone_8_contacts": "Binary sensors for this room's windows/doors (on = open). Any one open past the pause delay pauses this room. Unavailable sensors hold the last known state."
+        }
+      }
+    }
+  },
+  "selector": {
+    "resting_mode_bias": {
+      "options": {
+        "last": "Last called mode (default)",
+        "cool": "Always rest in cool",
+        "heat": "Always rest in heat"
+      }
+    },
+    "inhibit_action": {
+      "options": {
+        "off": "Off (zero draw, no protection)",
+        "fan_only": "Fan only (circulate)",
+        "eco": "Eco — protection only (recommended)"
+      }
+    },
+    "idle_action": {
+      "options": {
+        "fan_only": "Fan only — circulate (default)",
+        "off": "Off — fan stops, vanes close",
+        "off_after_dry": "Off after a coil-dry period"
+      }
+    }
+  },
+  "services": {
+    "recompute": {
+      "name": "Recompute",
+      "description": "Force the coordinator to recompute the plan and re-apply it to the heads now."
+    }
+  },
+  "entity": {
+    "number": {
+      "zone_target": {
+        "name": "{zone} target"
+      },
+      "zone_drift": {
+        "name": "{zone} drift"
+      },
+      "zone_emergency_floor": {
+        "name": "{zone} emergency floor"
+      }
+    },
+    "switch": {
+      "coordinator_enable": {
+        "name": "Coordinator enable"
+      },
+      "eco_idle": {
+        "name": "Eco idle"
+      },
+      "heat_lockout": {
+        "name": "Heat lockout"
+      },
+      "cool_lockout": {
+        "name": "Cool lockout"
+      },
+      "zone_enable": {
+        "name": "{zone} enable"
+      },
+      "zone_fan_auto": {
+        "name": "{zone} fan auto"
+      },
+      "zone_cool_exempt": {
+        "name": "{zone} cool exempt"
+      },
+      "zone_emergency_protect": {
+        "name": "{zone} emergency protect"
+      },
+      "zone_window_freeze_protect": {
+        "name": "{zone} window freeze protection"
+      }
+    },
+    "select": {
+      "shared_mode": {
+        "name": "Shared mode"
+      },
+      "zone_direction": {
+        "name": "{zone} direction",
+        "state": {
+          "heat_cool": "Heat/Cool",
+          "heat": "Heat only",
+          "cool": "Cool only"
+        }
+      }
+    },
+    "sensor": {
+      "plan": {
+        "name": "Plan"
+      }
+    },
+    "climate": {
+      "zone_thermostat": {
+        "name": "{zone} thermostat"
+      }
+    }
+  }
+}

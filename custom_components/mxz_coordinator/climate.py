@@ -1,0 +1,416 @@
+"""Native single-target room thermostats (HomeKit/Google-facing facade).
+
+Each room (primary, secondary) is exposed as a single-setpoint thermostat that
+HomeKit/Google render as a clean Tesla/Nest-style "Auto" tile: one number, the
+system picks heat vs cool. These entities own NO state of their own. They READ the
+coordinator's plan/targets for display and WRITE by driving the integration's own
+``number.*_target`` / ``switch.*_enable`` entities (the single source of truth +
+restore layer) -- exactly as the echavet proxy's ``coordinator_single_target`` mode
+drives the legacy ``input_number``/``input_boolean`` helpers, redirected to this
+integration's entities. The coordinator stays the sole writer to the real heads.
+
+Optional vane ``select`` entities are mirrored as swing modes so the native tile
+keeps vane control, removing the need for the proxy entirely.
+
+An optional per-zone "airflow" (``stage``) sensor keeps the tile's fan display
+HONEST while the coordinator has handed the fan back to the firmware's own
+``auto`` ramp: the head then reports the token ``auto`` and the last real speed
+freezes, so nobody upstream (a HomeKit slider especially) knows the physical
+airflow. When such a sensor is wired, the tile mirrors the firmware's decoded
+actual blower stage as the matching settable rung — display ONLY; it never
+changes what the coordinator commands or what the latch machinery reads.
+"""
+
+from __future__ import annotations
+
+from typing import Any, ClassVar
+
+from homeassistant.components.climate import (
+    ATTR_HVAC_MODE,
+    ClimateEntity,
+    ClimateEntityFeature,
+    HVACAction,
+    HVACMode,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import ATTR_TEMPERATURE
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .const import (
+    DOMAIN,
+    FAN_AUTO,
+    MODE_COOL,
+    MODE_HEAT,
+    STAGE_TO_FAN,
+    UNAVAILABLE_STATES,
+)
+from .coordinator import INPUT_SOURCE_SERVICE, MXZCoordinator, Zone
+from .entity import MXZEntity
+
+# Independent horizontal swing was added in HA 2024.12; guard for older cores.
+_HAS_HORIZONTAL_SWING = hasattr(ClimateEntityFeature, "SWING_HORIZONTAL_MODE")
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up one single-target room thermostat per zone."""
+    coordinator: MXZCoordinator = entry.runtime_data
+    async_add_entities(
+        MXZRoomClimate(coordinator, zone) for zone in coordinator.zones
+    )
+
+
+class MXZRoomClimate(MXZEntity, CoordinatorEntity[MXZCoordinator], ClimateEntity):
+    """A single-target thermostat facade over one zone's helper entities."""
+
+    # Local fork: HEAT and COOL are one-sided per-room directions (the room only
+    # ever calls that way and coasts otherwise); HEAT_COOL is the original
+    # two-sided single target. Shared-mode arbitration is unchanged.
+    _attr_hvac_modes: ClassVar[list[HVACMode]] = [
+        HVACMode.OFF,
+        HVACMode.HEAT,
+        HVACMode.COOL,
+        HVACMode.HEAT_COOL,
+    ]
+    _attr_icon = "mdi:home-thermometer"
+    _enable_turn_on_off_backwards_compatibility = False
+
+    def __init__(self, coordinator: MXZCoordinator, zone: Zone) -> None:
+        MXZEntity.__init__(self, coordinator, f"{zone.slug}_thermostat")
+        CoordinatorEntity.__init__(self, coordinator)
+        self._zone = zone
+        self._attr_translation_key = "zone_thermostat"
+        self._attr_translation_placeholders = {"zone": zone.name}
+
+        # Report the HA system temperature unit + its resolution (°F: whole
+        # degrees; °C: 0.5° steps).
+        self._attr_temperature_unit = coordinator.temp_unit
+        self._attr_target_temperature_step = coordinator.target_step
+
+        # Setpoint-slider bounds are derived live from the head (see min_temp /
+        # max_temp below): [clamp_min, clamp_max] narrowed to the head's own
+        # native operating band, so HomeKit/Google won't offer targets the head
+        # can't actually reach (#10).
+
+        # The underlying head this tile passes fan/vane control through to.
+        self._head_id = zone.climate_id
+        self._vane_vertical_id = zone.vane_vertical_id
+        self._vane_horizontal_id = zone.vane_horizontal_id
+        # Optional actual-airflow (stage) sensor for honest fan display under
+        # firmware `auto` (see module docstring + fan_mode below).
+        self._stage_sensor_id = zone.stage_sensor_id
+
+        features = (
+            ClimateEntityFeature.TARGET_TEMPERATURE
+            | ClimateEntityFeature.FAN_MODE
+            | ClimateEntityFeature.TURN_ON
+            | ClimateEntityFeature.TURN_OFF
+        )
+        if self._vane_vertical_id:
+            features |= ClimateEntityFeature.SWING_MODE
+        if self._vane_horizontal_id and _HAS_HORIZONTAL_SWING:
+            features |= ClimateEntityFeature.SWING_HORIZONTAL_MODE
+        self._attr_supported_features = features
+
+    async def async_added_to_hass(self) -> None:
+        """Re-render when the underlying head changes (fan/vane reflected live)."""
+        await super().async_added_to_hass()
+        # Track the head (fan/vane) and, when wired, the stage sensor so the
+        # airflow display is live as the firmware ramps its own `auto` — no
+        # coordinator refresh required.
+        tracked = [self._head_id]
+        if self._stage_sensor_id:
+            tracked.append(self._stage_sensor_id)
+        self.async_on_remove(
+            async_track_state_change_event(
+                self.hass, tracked, self._handle_head_change
+            )
+        )
+
+    @callback
+    def _handle_head_change(self, _event: Event) -> None:
+        self.async_write_ha_state()
+
+    def _sibling_eid(self, platform: str, key: str) -> str | None:
+        """Resolve a sibling number/switch entity_id by its unique_id suffix.
+
+        Resolved lazily (not cached at add-time): platforms are forwarded
+        concurrently, so the number/switch entities may not be registered yet
+        when this climate entity is added. By the time a write fires, they are.
+        """
+        reg = er.async_get(self.hass)
+        entry_id = self.coordinator.config_entry.entry_id
+        return reg.async_get_entity_id(platform, DOMAIN, f"{entry_id}_{key}")
+
+    # -- room-state plumbing ------------------------------------------------
+    @property
+    def _enabled(self) -> bool:
+        return self._zone.enable
+
+    @property
+    def _sensor_id(self) -> str:
+        return self._zone.sensor_id
+
+    # -- display ------------------------------------------------------------
+    @property
+    def current_temperature(self) -> float | None:
+        """The room sensor the coordinator reads; None on dropout (no fake value)."""
+        state = self.hass.states.get(self._sensor_id)
+        if state is None or state.state in UNAVAILABLE_STATES:
+            return None
+        try:
+            return float(state.state)
+        except (ValueError, TypeError):
+            return None
+
+    @property
+    def min_temp(self) -> float:
+        """Low slider bound: clamp_min narrowed to the head's native floor (#10)."""
+        return self.coordinator.head_target_bounds(self._head_id)[0]
+
+    @property
+    def max_temp(self) -> float:
+        """High slider bound: clamp_max narrowed to the head's native ceiling (#10)."""
+        return self.coordinator.head_target_bounds(self._head_id)[1]
+
+    @property
+    def target_temperature(self) -> float | None:
+        return self._zone.target
+
+    @property
+    def hvac_mode(self) -> HVACMode:
+        """OFF when the room is disabled; otherwise the room's direction."""
+        if not self._enabled:
+            return HVACMode.OFF
+        try:
+            return HVACMode(self._zone.direction)
+        except ValueError:
+            return HVACMode.HEAT_COOL
+
+    @property
+    def hvac_action(self) -> HVACAction:
+        """What this room's head is ACTUALLY doing under the plan.
+
+        A room may be engaged (wants heat) while the shared compressor runs the
+        other mode — its head is parked, so the action must read IDLE, not
+        HEATING. Only an engagement matching the plan's shared mode is active.
+        """
+        if not self.coordinator.coordinator_enable or not self._enabled:
+            return HVACAction.OFF
+        if self.coordinator.zone_window_paused(self._zone) and not (
+            self.coordinator.data or {}
+        ).get(f"{self._zone.slug}_emergency"):
+            return HVACAction.OFF  # local fork: window/door pause
+        engage = self.coordinator.data.get(f"{self._zone.slug}_engage")
+        shared = self.coordinator.data.get("state")
+        if engage == MODE_COOL and shared == MODE_COOL:
+            return HVACAction.COOLING
+        if engage == MODE_HEAT and shared == MODE_HEAT:
+            return HVACAction.HEATING
+        return HVACAction.IDLE  # satisfied / parked (opposite mode) / neutral
+
+    # -- vane / swing (optional passthrough to a select entity) -------------
+    @property
+    def swing_modes(self) -> list[str] | None:
+        return self._vane_options(self._vane_vertical_id)
+
+    @property
+    def swing_mode(self) -> str | None:
+        return self._vane_state(self._vane_vertical_id)
+
+    async def async_set_swing_mode(self, swing_mode: str) -> None:
+        await self._set_vane(self._vane_vertical_id, swing_mode)
+
+    @property
+    def swing_horizontal_modes(self) -> list[str] | None:
+        return self._vane_options(self._vane_horizontal_id)
+
+    @property
+    def swing_horizontal_mode(self) -> str | None:
+        return self._vane_state(self._vane_horizontal_id)
+
+    async def async_set_swing_horizontal_mode(
+        self, swing_horizontal_mode: str
+    ) -> None:
+        await self._set_vane(self._vane_horizontal_id, swing_horizontal_mode)
+
+    def _vane_options(self, vane_id: str | None) -> list[str] | None:
+        if not vane_id:
+            return None
+        state = self.hass.states.get(vane_id)
+        return state.attributes.get("options") if state else None
+
+    def _vane_state(self, vane_id: str | None) -> str | None:
+        if not vane_id:
+            return None
+        state = self.hass.states.get(vane_id)
+        if state is None or state.state in UNAVAILABLE_STATES:
+            return None
+        return state.state
+
+    async def _set_vane(self, vane_id: str | None, option: str) -> None:
+        if not vane_id:
+            return
+        # The coordinator applies it — and if the head is OFF (eco/away), it
+        # briefly kicks the head into fan_only so the louvre physically moves,
+        # then hands the head back to the plan.
+        await self.coordinator.async_apply_vane(self._head_id, vane_id, option)
+
+    # -- fan (passthrough to the underlying head) ---------------------------
+    @property
+    def fan_modes(self) -> list[str] | None:
+        state = self.hass.states.get(self._head_id)
+        return state.attributes.get("fan_modes") if state else None
+
+    @property
+    def fan_mode(self) -> str | None:
+        """The REQUESTED fan setting (local fork) -- never the momentary speed.
+
+        ``auto`` whenever the room's fan is not manually held: the head is
+        commanded ``auto``, or it is running a speed the coordinator's own boost
+        ladder picked. Only a genuine manual hold shows that held speed. The
+        actual blower speed is published separately as the ``fan_actual``
+        attribute. Reporting the momentary speed here made every boost step or
+        firmware ramp look like a person changing the fan to upstream
+        controllers (Climate Advisor opened a 4 h manual-override grace on each).
+        """
+        state = self.hass.states.get(self._head_id)
+        commanded = state.attributes.get("fan_mode") if state else None
+        if commanded is None:
+            return None
+        if commanded == FAN_AUTO:
+            return FAN_AUTO
+        coord = self.coordinator
+        if coord.fan_auto_is_on(self._head_id) and commanded == coord._fan_cmd.get(
+            self._head_id
+        ):
+            return FAN_AUTO  # our boost ladder's choice, not a person's
+        return commanded
+
+    @property
+    def fan_actual(self) -> str | None:
+        """What the blower is doing: the firmware stage under ``auto``, else the
+        commanded token (upstream's former display mapping, now an attribute)."""
+        state = self.hass.states.get(self._head_id)
+        commanded = state.attributes.get("fan_mode") if state else None
+        if commanded != FAN_AUTO or not self._stage_sensor_id:
+            return commanded
+        stage_state = self.hass.states.get(self._stage_sensor_id)
+        if stage_state is None or stage_state.state in UNAVAILABLE_STATES:
+            return commanded
+        # ESPHome text sensors report uppercase ("GENTLE"); normalize.
+        rung = STAGE_TO_FAN.get(stage_state.state.strip().upper())
+        modes = self.fan_modes
+        if rung is not None and (modes is None or rung in modes):
+            return rung
+        return commanded
+
+    async def async_set_fan_mode(self, fan_mode: str) -> None:
+        """Fan is independent of the coordinator's mode/setpoints -> drive the head.
+
+        Forwarded verbatim to the head (unchanged manual-hold semantics), through
+        the coordinator's head-command choke point so the head's echo is
+        recognised as ours rather than as remote input. Note:
+        if the tile is currently DISPLAYING a mapped rung (e.g. "low" mirrored
+        from stage GENTLE while the firmware runs its own `auto`) and the user
+        selects that same "low", this issues set_fan_mode low on the head — a
+        genuine manual hold at low, exactly as intended (the coordinator's latch
+        picks it up as a deliberate departure from `auto`)."""
+        await self.coordinator.async_head_call(
+            "set_fan_mode",
+            {"entity_id": self._head_id, "fan_mode": fan_mode},
+        )
+
+    # -- input provenance ---------------------------------------------------
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Who last changed this room's target/enable (see Zone.input_*).
+
+        Published in the SAME state write as the change itself, so an upstream
+        controller (Climate Advisor) can recognise a person's remote input
+        (``last_input_source == "head_manual"``) atomically, without guessing.
+        """
+        zone = self._zone
+        record = self.coordinator.remote_record(self._head_id)
+        return {
+            "last_input_source": zone.input_source,
+            "last_input_kind": zone.input_kind,
+            "last_input_generation": zone.input_generation,
+            "last_input_at": zone.input_at,
+            "remote_last_cool": record.cool,
+            "remote_last_heat": record.heat,
+            # Local fork: window/door pause state (none|closed|open|paused).
+            "window": self.coordinator.zone_window_label(zone),
+            "window_open_since": self.coordinator.zone_window_open_since(zone),
+            # Local fork: actual blower speed (fan_mode is the requested setting).
+            "fan_actual": self.fan_actual,
+        }
+
+    # -- write paths (one coordinator entry point; never coordinator state) --
+    async def async_set_temperature(self, **kwargs: Any) -> None:
+        """Single-target write -> the room's canonical target (+ enable).
+
+        Honors ``hvac_mode`` when the caller includes it: HA's
+        ``climate.set_temperature`` service passes it straight through in
+        kwargs, and entities are expected to apply it, so a script that sends
+        ``hvac_mode: heat_cool`` + a temperature to a room that is OFF must
+        turn the room on rather than silently drop the mode (#17).
+
+        Target and enable are applied together through the coordinator's
+        ``set_zone_input``, which writes the TARGET BEFORE ENABLING the room —
+        so no recompute can ever see the room on with its previous (possibly
+        stale) target — and then requests one recompute.
+        """
+        enable: bool | None = None
+        direction: str | None = None
+        if (hvac_mode := kwargs.get(ATTR_HVAC_MODE)) is not None:
+            enable = hvac_mode != HVACMode.OFF
+            if enable:
+                direction = str(hvac_mode)
+        target: float | None = None
+        if (temp := kwargs.get(ATTR_TEMPERATURE)) is not None:
+            # Snap to the unit resolution (whole °F / 0.5 °C).
+            step = self.coordinator.target_step or 1.0
+            target = round(float(temp) / step) * step
+        if target is None and enable is None:
+            return
+        self.coordinator.set_zone_input(
+            self._zone,
+            source=INPUT_SOURCE_SERVICE,
+            target=target,
+            enable=enable,
+            direction=direction,
+        )
+        await self.coordinator.async_user_changed()
+
+    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
+        if hvac_mode == HVACMode.OFF:
+            await self._set_enable(False)
+            return
+        # Direction first, then enable (set_zone_input orders the writes).
+        self.coordinator.set_zone_input(
+            self._zone,
+            source=INPUT_SOURCE_SERVICE,
+            enable=True,
+            direction=str(hvac_mode),
+        )
+        await self.coordinator.async_user_changed()
+
+    async def async_turn_on(self) -> None:
+        await self._set_enable(True)
+
+    async def async_turn_off(self) -> None:
+        await self._set_enable(False)
+
+    async def _set_enable(self, on: bool) -> None:
+        self.coordinator.set_zone_input(
+            self._zone, source=INPUT_SOURCE_SERVICE, enable=on
+        )
+        await self.coordinator.async_user_changed()
