@@ -1646,7 +1646,13 @@ async def test_engage_latch_survives_shared_mode_flip(hass: HomeAssistant) -> No
     await _recompute(hass, entry)
     assert hass.states.get(head_a).state == "cool"  # mid-run, latched
 
-    # B goes cold enough to DEMAND heat; hysteresis elapsed -> shared mode flips.
+    # B goes below its emergency floor. (A plain heat DEMAND from lower-priority
+    # B no longer interrupts A's run -- the fork's priority hold; see
+    # tests/test_priority_hold.py -- but emergency heat still does.)
+    await hass.services.async_call(
+        "switch", "turn_on",
+        {"entity_id": _eid(hass, entry, "_secondary_emergency_protect")}, blocking=True,
+    )
     await _set_temp(hass, SENSOR_B, 55)
     entry.runtime_data._last_mode_change_ts = 0.0
     await _recompute(hass, entry)

@@ -77,3 +77,28 @@ async def test_releasing_the_hold_reports_auto_again(hass: HomeAssistant) -> Non
     await hass.async_block_till_done()
     await _recompute(hass, entry)
     assert hass.states.get(prim).attributes["fan_mode"] == "auto"
+
+
+async def test_boost_step_in_flight_is_not_a_fan_change(hass: HomeAssistant) -> None:
+    """2026-10-19 live: auto -> low -> auto within one second on each boost step.
+
+    _write_fan records the new ladder token before the head applies it. A
+    render inside that window (head still on the previous ladder token) must
+    keep reporting ``auto``; Climate Advisor read the blip as a person turning
+    the fan off and paused the room for 30 minutes each time.
+    """
+    entry, head_a, prim = await _rig(hass)
+    await _set_temp(hass, SENSOR_A, 67)
+    await _recompute(hass, entry)
+    coord = entry.runtime_data
+    old = hass.states.get(head_a).attributes["fan_mode"]
+    assert old != "auto"
+    assert hass.states.get(prim).attributes["fan_mode"] == "auto"
+    # Boost decides on a different rung; the head has not applied it yet.
+    new = next(t for t in ("quiet", "low", "medium", "high") if t != old)
+    coord._fan_prev[head_a] = old
+    coord._fan_cmd[head_a] = new
+    coord.async_update_listeners()
+    await hass.async_block_till_done()
+    assert hass.states.get(prim).attributes["fan_mode"] == "auto"
+    assert hass.states.get(prim).attributes["fan_actual"] == old

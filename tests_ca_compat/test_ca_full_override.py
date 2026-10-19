@@ -92,7 +92,7 @@ async def test_ir_remote_override_is_respected_by_stock_ca(hass: HomeAssistant, 
     # CA also mirrors every notification to notify.send_email (email channel).
     hass.services.async_register("notify", "send_email", lambda c: notes.append(c.data))
     ca = MockConfigEntry(
-        domain="climate_advisor", version=20, title="Test room",
+        domain="climate_advisor", version=20, title="Master",
         data={**MASTER_CFG, "climate_entity": therm, "weather_entity": weather,
               "door_window_sensors": [], "notify_service": "notify.test",
               "outdoor_temp_source": "weather_service"},
@@ -123,7 +123,7 @@ async def test_ir_remote_override_is_respected_by_stock_ca(hass: HomeAssistant, 
     await _advance(hass, freezer, 1)
     assert engine._override_confirm_pending or engine._manual_override_active, (
         "stock CA did not detect the override")
-    # CA confirms an override after override_confirm_seconds (600 s in this fixture).
+    # CA confirms an override after override_confirm_seconds (600 s on the Master).
     await _advance(hass, freezer, 11)
     assert engine._manual_override_active, "stock CA did not confirm the override"
     st = hass.states.get(therm)

@@ -115,6 +115,7 @@ from .const import (
     MODE_HEAT,
     MODE_OFF,
     OFF_WHILE_ENABLED_DELAY,
+    PRIORITY_HOLD_MAX_S,
     STARTUP_RECOVER_DELAY,
     UNAVAILABLE_STATES,
     VANE_KICK_APPLY,
@@ -467,6 +468,10 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # lazily from the head's own mode on the first compute so an in-flight
         # run resumes across restarts.
         self._engage_latch: dict[str, str] = {}
+        # Local fork (3.4.2): when the current priority hold began (epoch s), or
+        # None. Bounded by PRIORITY_HOLD_MAX_S; not persisted, so a restart
+        # grants at most one more full window.
+        self._priority_hold_since: float | None = None
 
         # Emergency-heat latch per zone slug: {"entered_at", "loss_since",
         # "pending"} (see logic.emergency_step). Persisted so an interrupted
@@ -1033,13 +1038,55 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if self.resting_mode_bias in (MODE_COOL, MODE_HEAT)
             else None
         )
-        state = shared_mode(
+        # Priority hold (local fork, 3.4.2): a room only holds the shared mode
+        # while its head can actually run. An offline head cannot finish the
+        # run, so it does not count as running for the hold.
+        hold_engages = [
+            engage
+            if (head := self.hass.states.get(zone.climate_id)) is not None
+            and head.state not in UNAVAILABLE_STATES
+            else ENGAGE_SATISFIED
+            for zone, engage in zip(self.zones, engages)
+        ]
+        unheld = shared_mode(
             demands=demands,
             current=current,
             allowed=allowed,
             resting=resting,
             emergency_heat=any(emergencies),
         )
+        state = shared_mode(
+            demands=demands,
+            current=current,
+            allowed=allowed,
+            resting=resting,
+            emergency_heat=any(emergencies),
+            engaged=hold_engages,
+        )
+        # Visibility: a flip the old rule would have made but a running
+        # higher-priority room is holding off.
+        held = not any(emergencies) and state == current and state != unheld
+        hold_expired = False
+        if held:
+            if self._priority_hold_since is None:
+                self._priority_hold_since = now_ts
+            elif now_ts - self._priority_hold_since >= PRIORITY_HOLD_MAX_S:
+                # The run has had its window; let lower-priority demand in.
+                _LOGGER.warning(
+                    "MXZ: priority hold released after %.0f min - the room "
+                    "holding %s has not reached its target",
+                    (now_ts - self._priority_hold_since) / 60,
+                    current,
+                )
+                state = unheld
+                held = False
+                hold_expired = True
+        hold_since = self._priority_hold_since if held else None
+        if not held:
+            # Released (target reached, demand gone, head offline, or the
+            # window elapsed and the flip goes ahead): the next hold, in
+            # whichever mode, starts a fresh window.
+            self._priority_hold_since = None
         plan.update(
             {
                 "state": state,
@@ -1075,6 +1122,13 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "heat_lockout": self.heat_lockout,
                 "cool_lockout": self.cool_lockout,
                 "standoff": MODE_COOL in demands and MODE_HEAT in demands,
+                "priority_hold": held,
+                "priority_hold_since": (
+                    dt_util.utc_from_timestamp(hold_since).isoformat()
+                    if hold_since is not None
+                    else None
+                ),
+                "priority_hold_expired": hold_expired,
                 "sensors_ok": all_ok,
                 "seconds_since_mode_change": int(elapsed),
                 "mode_change_allowed": allowed,

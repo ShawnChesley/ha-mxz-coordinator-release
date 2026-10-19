@@ -252,6 +252,7 @@ def shared_mode(
     allowed: bool,
     resting: str | None = None,
     emergency_heat: bool = False,
+    engaged: list[str] | None = None,
 ) -> str:
     """Choose the shared mode (cool|heat). Mirrors the mxz_plan state template.
 
@@ -269,6 +270,14 @@ def shared_mode(
 
     ``emergency_heat`` (some room is below its emergency floor) returns HEAT
     outright: it overrides standoff priority and the hysteresis gate.
+
+    ``engaged`` (local fork, priority hold) is one engage result per zone in
+    the same priority order. A room actively running in the CURRENT mode holds
+    that mode against every lower-priority room: the shared mode will not flip
+    until it reaches its target (or stops running for any other reason), even
+    after it is back inside the demand threshold and no longer "calling". A
+    higher-priority room's opposite demand still wins, and emergency heat still
+    overrides everything. See :func:`priority_hold`.
     """
     if emergency_heat:
         return MODE_HEAT
@@ -290,8 +299,29 @@ def shared_mode(
 
     still = (current == MODE_COOL and any_cool) or (current == MODE_HEAT and any_heat)
     if proposed != current and allowed and (standoff or not still):
+        if engaged is not None and priority_hold(
+            demands=demands, engaged=engaged, current=current, proposed=proposed
+        ):
+            return current
         return proposed
     return current
+
+
+def priority_hold(
+    *, demands: list[str], engaged: list[str], current: str, proposed: str
+) -> bool:
+    """True when a running room outranks every room asking for ``proposed``.
+
+    Lists are in priority order (index 0 = highest). A room "runs" in the
+    current mode when its engage result equals ``current``. The flip is held
+    when such a room sits above the first room whose demand is ``proposed``
+    (or when no room demands it at all -- a resting-bias flip never interrupts
+    a running room).
+    """
+    first_opposite = next(
+        (i for i, d in enumerate(demands) if d == proposed), len(demands)
+    )
+    return any(e == current for e in engaged[:first_opposite])
 
 
 def setpoints(

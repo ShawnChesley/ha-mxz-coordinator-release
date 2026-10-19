@@ -87,6 +87,10 @@ CONF_FAN_BOOST_MAX = "fan_boost_max"
 DEFAULT_DEMAND_THRESHOLD = 3.0  # S — off-target °F before the SHARED MODE may flip
 DEFAULT_ENGAGE_DEADBAND = 1.0  # D — off-target °F before a head actively runs
 DEFAULT_MODE_HYSTERESIS = 600  # seconds minimum dwell before a heat<->cool flip
+# Local fork (3.4.2): the longest a running higher-priority room may hold the
+# shared mode against lower-priority opposite demand. A run that cannot finish
+# (head offline, room parked just above target) must not starve the house.
+PRIORITY_HOLD_MAX_S = 3600
 DEFAULT_ECO_COOL_MAX = 78.0  # away/eco cool extreme
 DEFAULT_ECO_HEAT_MIN = 50.0  # away/eco heat extreme
 DEFAULT_CLAMP_MIN = 59  # firmware min setpoint

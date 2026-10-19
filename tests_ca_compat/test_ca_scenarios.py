@@ -1,7 +1,7 @@
 """Stock Climate Advisor 0.7.106 -> forked MXZ Coordinator, scenario assertions.
 
 Real HA test instance: forked MXZ (real coordinator, two mock heads) + CA's real
-AutomationEngine aimed at the MXZ room thermostat. Room B is kept
+AutomationEngine aimed at the MXZ Master-style room thermostat. Room B is kept
 cold so the shared outdoor unit is in HEAT for every scenario -- the season in
 which tonight's incident happened. Clock is pinned per scenario.
 """
