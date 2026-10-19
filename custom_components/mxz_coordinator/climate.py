@@ -288,10 +288,17 @@ class MXZRoomClimate(MXZEntity, CoordinatorEntity[MXZCoordinator], ClimateEntity
         if commanded == FAN_AUTO:
             return FAN_AUTO
         coord = self.coordinator
-        if coord.fan_auto_is_on(self._head_id) and commanded == coord._fan_cmd.get(
-            self._head_id
+        # Our boost ladder's choice, not a person's. _write_fan records the new
+        # token in _fan_cmd BEFORE the head applies it, so for the moment the
+        # head is still on the prior ladder token (_fan_prev) -- a render in
+        # that window must not show the old speed as a manual pick (2026-10-19:
+        # auto -> low -> auto within one second on every boost step, and
+        # Climate Advisor opened a 30-minute "fan turned off" grace each time).
+        if coord.fan_auto_is_on(self._head_id) and commanded in (
+            coord._fan_cmd.get(self._head_id),
+            coord._fan_prev.get(self._head_id),
         ):
-            return FAN_AUTO  # our boost ladder's choice, not a person's
+            return FAN_AUTO
         return commanded
 
     @property

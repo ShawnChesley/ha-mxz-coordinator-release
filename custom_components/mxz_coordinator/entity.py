@@ -44,5 +44,5 @@ class MXZEntity(Entity):
             # "Visit" link on the device page -> the docs, incl. the Removing
             # section (the device intentionally has no Delete button — the
             # config entry is the removal handle; see issue #5).
-            configuration_url="https://github.com/ShawnChesley/ha-mxz-coordinator-release#removing",
+            configuration_url="https://github.com/ShawnChesley/ha-mxz-coordinator#removing",
         )
