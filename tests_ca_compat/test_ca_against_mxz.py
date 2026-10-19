@@ -2,7 +2,7 @@
 
 One real Home Assistant test instance: the forked MXZ integration (two mock heads,
 real coordinator) and CA's real AutomationEngine pointed at the MXZ room
-thermostat, configured with a representative regression fixture. Nothing is mocked
+thermostat, configured like the live Master Bedroom zone. Nothing is mocked
 between them: CA calls climate.* services, MXZ receives them.
 """
 
@@ -16,9 +16,9 @@ from custom_components.mxz_coordinator.const import CONF_MODE_HYSTERESIS
 from tests.test_climate import SENSOR_A, SENSOR_B, _eid, _enable, _recompute, _set_temp
 from tests.test_climate import _setup as _climate_setup
 
-WINDOW = "binary_sensor.test_window"
+WINDOW = "binary_sensor.master_window"
 
-# Regression fixture with intentionally invalid targets to reproduce rejected writes.
+# Live Master Bedroom CA config (diagnostics 2026-10-17), trimmed to control keys.
 MASTER_CFG = {
     "comfort_heat": 69,
     "comfort_cool": 71,
