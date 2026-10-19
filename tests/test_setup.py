@@ -104,5 +104,5 @@ async def test_device_carries_docs_link(hass: HomeAssistant) -> None:
     assert (DOMAIN, entry.entry_id) in device.identifiers
     assert (
         device.configuration_url
-        == "https://github.com/ShawnChesley/ha-mxz-coordinator-release#removing"
+        == "https://github.com/ShawnChesley/ha-mxz-coordinator#removing"
     )
