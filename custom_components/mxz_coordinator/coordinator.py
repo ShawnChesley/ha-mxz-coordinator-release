@@ -19,7 +19,7 @@ import logging
 import math
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -36,6 +36,7 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.helpers.start import async_at_start
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.temperature import display_temp
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import TemperatureConverter
@@ -157,6 +158,7 @@ from .remote_input import (
     obs_from_state,
     relevant_change,
 )
+from .target_input import TARGET_SETTLE_S, TargetInput
 from .window_pause import (
     EVENT_PAUSED,
     EVENT_RESUMED,
@@ -522,6 +524,8 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cmd_contexts: dict[str, float] = {}
         self._cmd_context_order: deque[str] = deque()
         self._last_head_cmd: dict[str, tuple[float, str | None, str | None]] = {}
+        self._target_input: dict[str, TargetInput] = {}
+        self._target_timers: dict[str, Any] = {}
         # Last externally observed remote temperature per head, per remote mode.
         self._remote: dict[str, RemoteRecord] = {}
         self._remote_store: Store = Store(
@@ -615,6 +619,10 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for cancel in self._dry_timers.values():
             cancel()
         self._dry_timers.clear()
+        for cancel in self._target_timers.values():
+            cancel()
+        self._target_timers.clear()
+        self._target_input.clear()
         if self._remote:
             await self._remote_store.async_save(
                 {"heads": {k: v.as_dict() for k, v in self._remote.items()}}
@@ -1147,6 +1155,17 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # otherwise the plan's diagnostic would lag the latch by a cycle.
         for zone_view, zone in zip(plan.get("zones", ()), self.zones):
             zone_view["fan_hold"] = self._fan_latched.get(zone.climate_id, False)
+            # Compute the canonical target's representation even at startup
+            # when an idempotent apply has not issued a command yet.
+            zone_view["target_equivalents"] = {
+                "target": zone.target,
+                "equivalents": list(self._target_equivalents(zone.climate_id, zone.target)),
+            }
+            journal = self._target_input.get(zone.climate_id)
+            zone_view["target_commands"] = {
+                mode: {"target": values[0], "equivalents": list(values[1:])}
+                for mode, values in (journal.commanded.items() if journal else ())
+            }
         return plan
 
     # -- actuator (mirrors script.mxz_coordinate) ---------------------------
@@ -1181,6 +1200,10 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if zone.climate_id in self._vane_kicks:
                 continue  # mid vane-kick: leave the head alone until it finishes
             emergency = bool(plan.get(f"{zone.slug}_emergency"))
+            if emergency or self.zone_window_paused(zone):
+                # Use the NEW plan, not self.data (which still holds the prior
+                # plan until this update finishes). Protection cannot wait.
+                self._cancel_target_candidate(zone.climate_id)
             # Emergency heat overrides eco for its own zone: real heat at the
             # emergency target, not the eco protection edges.
             zone_eco = self._eco_active() and not emergency
@@ -1488,6 +1511,27 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Issue (or skip, if already correct) the command for one head."""
         state = self.hass.states.get(climate_id)
         cur_mode = state.state if state else None
+
+        # Do not erase a potential remote temperature press before its settle
+        # timer can judge it. This defers only ordinary setpoint rewrites in the
+        # SAME mode. Pauses, Off, mode changes and protection always take priority.
+        journal = self._target_input.get(climate_id)
+        candidate = journal.candidate if journal else None
+        zone = self.zone_for_head(climate_id)
+        if candidate is not None and zone is not None:
+            expected = high if act == MODE_COOL else low
+            can_wait = (
+                act == cur_mode == candidate.mode
+                and zone.enable and self.coordinator_enable
+                and not self.inhibited and not self._eco_active()
+                and not self.zone_window_paused(zone)
+                and not (self.data or {}).get(f"{zone.slug}_emergency")
+                and candidate.generation == zone.input_generation
+                and journal.matches(act, expected)
+            )
+            if can_wait:
+                return
+            self._cancel_target_candidate(climate_id)
 
         if act in (MODE_COOL, MODE_HEAT):
             # Clamp each edge to what THIS head will actually accept. The global
@@ -1966,6 +2010,11 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @callback
     def _on_input_change(self, event: Event) -> None:
         """A temp sensor changed -> recompute."""
+        for zone in self.zones:
+            if zone.sensor_id == event.data.get("entity_id") and not _read_temp(
+                event.data.get("new_state"), zone.target
+            )[0]:
+                self._cancel_target_candidate(zone.climate_id)
         self.hass.async_create_task(self.async_request_refresh())
 
     @callback
@@ -2135,6 +2184,28 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         a person at the remote — and is classified in ``_on_head_change``.
         """
         climate_id = data["entity_id"]
+        prior_targets = (
+            dict(self._target_input[climate_id].commanded)
+            if climate_id in self._target_input else None
+        )
+        # The target expectation is independent of fan/mode echo timestamps.
+        # Stamp BEFORE dispatch because a synchronous head can report inline.
+        state = self.hass.states.get(climate_id)
+        target_mode = data.get("hvac_mode", state.state if state else None)
+        target = data.get("temperature")
+        if target is None:
+            target = data.get(
+                "target_temp_low" if target_mode == MODE_HEAT else "target_temp_high"
+            )
+        target_touched = "hvac_mode" in data or target is not None
+        if target_mode in (MODE_HEAT, MODE_COOL) and target is not None:
+            self._cancel_target_candidate(climate_id)
+            self._target_input.setdefault(climate_id, TargetInput()).command(
+                target_mode, float(target),
+                *self._target_equivalents(climate_id, float(target)),
+            )
+        elif "hvac_mode" in data:
+            self._cancel_target_candidate(climate_id)
         now = time.monotonic()
         ctx = Context()
         self._cmd_contexts[ctx.id] = now
@@ -2152,9 +2223,110 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             mode = mode if mode is not None else prev[1]
             fan = fan if fan is not None else prev[2]
         self._last_head_cmd[climate_id] = (now, mode, fan)
-        await self.hass.services.async_call(
-            "climate", service, data, blocking=True, context=ctx
-        )
+        try:
+            await self.hass.services.async_call(
+                "climate", service, data, blocking=True, context=ctx
+            )
+        except HomeAssistantError:
+            # A rejected write must not create a permanent echo expectation.
+            if target_touched:
+                self._cancel_target_candidate(climate_id)
+                if prior_targets is None:
+                    self._target_input.pop(climate_id, None)
+                else:
+                    self._target_input[climate_id] = TargetInput(commanded=prior_targets)
+            raise
+
+    def _target_equivalents(self, climate_id: str, target: float) -> tuple[float, ...]:
+        """The known native-step/display representation of our target, not a band.
+
+        E.g. 72 F -> 22.22 C -> native 22.0 C -> HA display 71.5 F. Never learn
+        aliases from arbitrary reports (which could be real remote presses).
+        """
+        component = (self.hass.data.get(DATA_INSTANCES) or {}).get("climate")
+        entity = component.get_entity(climate_id) if component else None
+        if entity is None:
+            return ()
+        try:
+            step = float(entity.target_temperature_step)
+            if not math.isfinite(step) or step <= 0:
+                return ()
+            native = TemperatureConverter.convert(target, self.temp_unit, entity.temperature_unit)
+            scaled = native / step
+            native = math.copysign(math.floor(abs(scaled) + 0.5), scaled) * step
+            displayed = display_temp(self.hass, native, entity.temperature_unit, entity.precision)
+            return (float(displayed),) if displayed is not None else ()
+        except (TypeError, ValueError, AttributeError):
+            return ()
+
+    @callback
+    def _cancel_target_candidate(self, climate_id: str) -> None:
+        if cancel := self._target_timers.pop(climate_id, None):
+            cancel()
+        if journal := self._target_input.get(climate_id):
+            journal.candidate = None
+
+    @callback
+    def _settle_target_candidate(self, climate_id: str, _now: Any) -> None:
+        self._target_timers.pop(climate_id, None)
+        journal = self._target_input.get(climate_id)
+        candidate = journal.candidate if journal else None
+        zone = self.zone_for_head(climate_id)
+        observed = obs_from_state(self.hass.states.get(climate_id))
+        if (
+            candidate is None or zone is None or observed is None
+            or observed.mode != candidate.mode or observed.temperature != candidate.value
+            or zone.input_generation != candidate.generation
+            or not zone.enable or self.zone_window_paused(zone)
+            or self.inhibited or self._eco_active()
+            or not _read_temp(self.hass.states.get(zone.sensor_id), zone.target)[0]
+            or (self.data or {}).get(f"{zone.slug}_emergency")
+        ):
+            self._cancel_target_candidate(climate_id)
+            return
+        age = time.monotonic() - candidate.since
+        if age < TARGET_SETTLE_S:
+            self._target_timers[climate_id] = async_call_later(
+                self.hass, TARGET_SETTLE_S - age,
+                partial(self._settle_target_candidate, climate_id),
+            )
+            return
+        self._cancel_target_candidate(climate_id)
+        lo, hi = self.head_target_bounds(climate_id)
+        step = self.target_step or 1.0
+        target = min(max(round(candidate.value / step) * step, lo), hi)
+        self.remote_record(climate_id).set(candidate.mode, candidate.value)
+        self._save_remote()
+        if self.set_zone_input(zone, source=INPUT_SOURCE_HEAD_MANUAL, target=target):
+            self.hass.async_create_task(self.async_request_refresh())
+
+    @callback
+    def _observe_target(self, climate_id: str, zone: Zone, old: Any, new: Any) -> bool:
+        """Handle a tracked temperature field without masking concurrent inputs."""
+        journal = self._target_input.get(climate_id)
+        if journal is None or new.mode not in journal.commanded or new.temperature is None:
+            return False
+        if old.mode != new.mode:
+            self._cancel_target_candidate(climate_id)
+            if not journal.matches(new.mode, new.temperature):
+                # An explicit remote power/mode transition still follows the
+                # existing IR intent path. In particular a paused room must
+                # remember its new requested target while immediately parking
+                # the head again; that safety park cannot wait for persistence.
+                return False
+        if old.mode == new.mode and old.temperature == new.temperature:
+            # A fan-only report neither creates a temperature candidate nor
+            # touches the remembered IR temperature.
+            return True
+        outcome = journal.observe(new.mode, new.temperature, time.monotonic(), zone.input_generation)
+        if outcome in ("echo", "invalid"):
+            self._cancel_target_candidate(climate_id)
+        elif climate_id not in self._target_timers:
+            self._target_timers[climate_id] = async_call_later(
+                self.hass, TARGET_SETTLE_S,
+                partial(self._settle_target_candidate, climate_id),
+            )
+        return True
 
     def _is_our_echo(self, climate_id: str, new_state: Any) -> bool:
         """Whether a head state change is the echo of one of our commands."""
@@ -2198,6 +2370,10 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         changed_target = False
         changed_enable = False
         changed_direction = False
+        if source != INPUT_SOURCE_HEAD_MANUAL and any(
+            value is not None for value in (target, enable, direction)
+        ):
+            self._cancel_target_candidate(zone.climate_id)
 
         def _write_target() -> None:
             nonlocal changed_target
@@ -2304,7 +2480,15 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         old = obs_from_state(old_state)
         new = obs_from_state(new_state)
         if old is None or new is None:
+            self._cancel_target_candidate(entity_id)
             return  # startup / reconnect / dropout: never a person
+        if old.mode != new.mode:
+            self._cancel_target_candidate(entity_id)
+        if self._observe_target(entity_id, zone, old, new):
+            # The target field has its OWN echo/candidate decision. Do not
+            # compare it with the stale remote record in the legacy classifier.
+            old = replace(old, temperature=None)
+            new = replace(new, temperature=None)
         if not relevant_change(old, new):
             return  # current_temperature, hvac_action, synthesized low/high
         if self._is_our_echo(entity_id, new_state):
@@ -2330,16 +2514,18 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             f"{new.mode}/{new.temperature}/{new.fan}",
             "; ".join(intent.notes) or "no intent",
         )
-        if target is None and enable is None:
-            return
-        # Local fork: a person's remote temperature or ON means "hold this
-        # number", whichever way that takes -- it reopens BOTH directions so a
-        # room an upstream controller had set to cool-only can still be heated
-        # from the remote (and vice versa). Remote mode is still never adopted
-        # as the shared mode; arbitration stays with the coordinator.
+        # Powering on in an allowed mode keeps the room's restriction. Only
+        # an explicit transition outside that restriction reopens both modes.
         direction = (
-            DIRECTION_AUTO if (target is not None or enable is True) else None
+            DIRECTION_AUTO
+            if old.mode != new.mode
+            and zone.direction != DIRECTION_AUTO
+            and new.mode in (MODE_HEAT, MODE_COOL, "auto", DIRECTION_AUTO)
+            and new.mode != zone.direction
+            else None
         )
+        if target is None and enable is None and direction is None:
+            return
         if self.set_zone_input(
             zone,
             source=INPUT_SOURCE_HEAD_MANUAL,
