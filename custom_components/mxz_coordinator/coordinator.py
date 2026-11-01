@@ -226,6 +226,11 @@ class Zone:
     # is on; emergency_protect/emergency_floor — force heat below the floor
     # (overrides heat lockout, eco, standoff priority and hysteresis).
     cool_exempt: bool = False
+    # Local fork: tight demand — this room votes on the SHARED mode at its own
+    # drift instead of max(global demand_threshold, drift). Lets a priority
+    # room (e.g. a bedroom held at a narrow band overnight) claim the shared
+    # compressor at target +/- drift. Default OFF = unchanged behaviour.
+    tight_demand: bool = False
     emergency_protect: bool = False
     emergency_floor: float = 60.0
     # Local fork: window/door pause. ``contacts`` are this room's binary_sensors
@@ -1051,7 +1056,12 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # told to tolerate a wide band must not steer the shared
                 # compressor inside it. max() reproduces today's behavior
                 # exactly whenever drift <= demand_threshold (the default).
-                sensor_ok=ok, band=max(self.demand_threshold, zdrift),
+                sensor_ok=ok,
+                band=(
+                    zdrift
+                    if zone.tight_demand
+                    else max(self.demand_threshold, zdrift)
+                ),
                 neutral=DEMAND_NEUTRAL,
                 **zcommon,
             )
@@ -1169,6 +1179,7 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "drift": self.zone_drift(zone),
                         "fan_hold": self._fan_latched.get(zone.climate_id, False),
                         "cool_exempt": zone.cool_exempt,
+                        "tight_demand": zone.tight_demand,
                         "cool_stop_offset": stop_offsets[i],
                         "emergency_protect": zone.emergency_protect,
                         "emergency_floor": zone.emergency_floor,

@@ -323,6 +323,9 @@
       "zone_cool_exempt": {
         "name": "{zone} cool exempt"
       },
+      "zone_tight_demand": {
+        "name": "{zone} tight demand"
+      },
       "zone_emergency_protect": {
         "name": "{zone} emergency protect"
       },
