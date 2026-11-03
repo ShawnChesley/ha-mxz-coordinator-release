@@ -24,6 +24,7 @@ class FanStage(StrEnum):
     AUTO = "auto"
     MEDIUM = "medium"
     HIGH = "high"
+    VERY_HIGH = "very high"  # matched to the head's "Very High" by supported_fan()
 
 
 @dataclass(frozen=True)
@@ -33,17 +34,33 @@ class AdaptiveSettings:
     # 2-3 F short for hours. High now starts at 1.5 F short.
     medium_at: float = 0.75
     high_at: float = 1.5
+    # Local fork 2026-11-03: top stage for a room that is well behind. A head
+    # without a "Very High" fan mode falls back via supported_fan().
+    very_high_at: float = 2.5
     hysteresis: float = 0.3
     boost_dwell_s: float = 600.0
 
     def __post_init__(self) -> None:
-        values = (self.medium_at, self.high_at, self.hysteresis, self.boost_dwell_s)
+        values = (
+            self.medium_at, self.high_at, self.very_high_at,
+            self.hysteresis, self.boost_dwell_s,
+        )
         if not all(math.isfinite(v) for v in values):
             raise ValueError("Adaptive settings must be finite")
-        if not 0 <= self.hysteresis < self.medium_at < self.high_at:
-            raise ValueError("Require 0 <= hysteresis < medium threshold < high threshold")
-        if self.high_at - self.medium_at <= 2 * self.hysteresis:
+        if not 0 <= self.hysteresis < self.medium_at < self.high_at < self.very_high_at:
+            raise ValueError(
+                "Require 0 <= hysteresis < medium < high < very high threshold"
+            )
+        if (
+            self.high_at - self.medium_at <= 2 * self.hysteresis
+            or self.very_high_at - self.high_at <= 2 * self.hysteresis
+        ):
             raise ValueError("Adaptive hysteresis bands must not overlap")
+
+    @property
+    def thresholds(self) -> tuple[float, float, float]:
+        """Entry thresholds for MEDIUM, HIGH, VERY_HIGH (index = stage - 1)."""
+        return (self.medium_at, self.high_at, self.very_high_at)
         if self.boost_dwell_s < 0:
             raise ValueError("Dwell must be nonnegative")
 
@@ -57,6 +74,8 @@ class FanDecision:
 
 
 DEFAULT_ADAPTIVE_SETTINGS = AdaptiveSettings()
+_LADDER = (FanStage.AUTO, FanStage.MEDIUM, FanStage.HIGH, FanStage.VERY_HIGH)
+_BOOST = (FanStage.MEDIUM, FanStage.HIGH, FanStage.VERY_HIGH)
 
 
 @dataclass
@@ -132,35 +151,30 @@ class RoomFanPolicy:
             return FanDecision("auto", "head", FanStage.AUTO, "room_sensor_unavailable")
 
         previous = self.stage
+        th = settings.thresholds
         if self.recovery_mode != mode or previous is None:
-            wanted = (
-                FanStage.HIGH if error_f > settings.high_at
-                else FanStage.MEDIUM if error_f >= settings.medium_at
-                else FanStage.AUTO
-            )
-        elif previous == FanStage.AUTO:
-            wanted = (
-                FanStage.HIGH if error_f > settings.high_at + settings.hysteresis
-                else FanStage.MEDIUM if error_f > settings.medium_at + settings.hysteresis
-                else FanStage.AUTO
-            )
-        elif previous == FanStage.HIGH:
-            wanted = (
-                FanStage.AUTO if error_f < settings.medium_at - settings.hysteresis
-                else FanStage.MEDIUM if error_f < settings.high_at - settings.hysteresis
-                else FanStage.HIGH
-            )
+            # Fresh decision: no hysteresis (MEDIUM entry is inclusive).
+            level = 0
+            if error_f >= th[0]:
+                level = 1
+            while level < len(th) and error_f > th[level]:
+                level += 1
         else:
-            wanted = (
-                FanStage.AUTO if error_f < settings.medium_at - settings.hysteresis
-                else FanStage.HIGH if error_f > settings.high_at + settings.hysteresis
-                else FanStage.MEDIUM
-            )
+            # Step up only past threshold + hysteresis; step down only below
+            # threshold - hysteresis. Multi-stage jumps are allowed.
+            level = _LADDER.index(previous)
+            start = level
+            while level < len(th) and error_f > th[level] + settings.hysteresis:
+                level += 1
+            if level == start:
+                while level > 0 and error_f < th[level - 1] - settings.hysteresis:
+                    level -= 1
+        wanted = _LADDER[level]
         # Dwell only BETWEEN boost stages. Near-target Auto and safety bypass it.
         if (
             self.recovery_mode == mode
-            and previous in (FanStage.MEDIUM, FanStage.HIGH)
-            and wanted in (FanStage.MEDIUM, FanStage.HIGH)
+            and previous in _BOOST
+            and wanted in _BOOST
             and self.stage_since is not None
             and 0 <= now - self.stage_since < settings.boost_dwell_s
         ):

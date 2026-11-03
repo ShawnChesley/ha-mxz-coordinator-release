@@ -9,7 +9,8 @@ overnight band. Expect more changeovers while other rooms are heating; widen tha
 room's drift to trade band width for fewer changeovers.
 
 **Adaptive fan recovers harder (local fork).** Adaptive fan policy now steps to
-Medium at 0.75 °F below target (was 1.0) and High at 1.5 °F (was 3.0). The old
+Medium at 0.75 °F below target (was 1.0), High at 1.5 °F (was 3.0), and a new
+Very High stage at 2.5 °F (heads without Very High fall back to native Auto). The old
 thresholds held Medium for hours while a capacity-limited room sat 2–3 °F short.
 Native-auto rooms are unaffected.
 

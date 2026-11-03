@@ -18,7 +18,8 @@ This candidate is not installed and is not yet a published HACS release.
   CA's override confirmation and hold behavior are covered by compatibility tests.
 * Direction and freeze-protection helper registry entries are retained on reload.
 * Adaptive fan recovery thresholds lowered: Medium at 0.75 °F short (was 1.0),
-  High at 1.5 °F (was 3.0); hysteresis and dwell unchanged.
+  High at 1.5 °F (was 3.0), new Very High stage at 2.5 °F; hysteresis and
+  dwell unchanged.
 * Per-room "tight demand" switch (default off). When on, the room votes on the
   shared heat/cool mode at its own drift instead of max(demand_threshold, drift),
   so a priority room can claim the shared compressor at target + drift rather than
