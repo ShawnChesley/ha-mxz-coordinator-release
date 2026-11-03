@@ -39,6 +39,7 @@ def room_call(
     cool_lockout: bool = False,
     cool_lockout_ceiling: float = 200.0,
     direction: str = DIRECTION_AUTO,
+    cool_block: bool = False,
 ) -> str:
     """Per-room call for one band (demand uses S/'neutral', engage uses D/'satisfied').
 
@@ -56,6 +57,11 @@ def room_call(
     ``cool_lockout`` is the mirror for the cold season: it holds off the cool call
     (let the room drift down on its own) UNLESS it rises above ``cool_lockout_ceiling``.
     The eco extremes are unaffected; the two lockouts are independent.
+
+    ``cool_block`` (local fork) is a per-room hard stop on comfort cooling —
+    e.g. while a woodstove is burning. Unlike ``cool_lockout`` it has no
+    ceiling and is not driven by the seasonal changeover. Eco protection
+    extremes still apply.
     """
     if not enabled:
         return MODE_OFF
@@ -68,7 +74,7 @@ def room_call(
     if not sensor_ok:
         return neutral
     if temp > target + band:
-        if direction == DIRECTION_HEAT:
+        if direction == DIRECTION_HEAT or cool_block:
             return neutral
         if cool_lockout and temp <= cool_lockout_ceiling:
             return neutral

@@ -54,6 +54,12 @@ async def async_setup_entry(
                 coordinator, zone, "cool_exempt", "mdi:snowflake-check"
             )
         )
+        # Local fork: hard stop on comfort cooling for this room (woodstove).
+        entities.append(
+            MXZZoneFlagSwitch(
+                coordinator, zone, "cool_block", "mdi:snowflake-off"
+            )
+        )
         # Local fork: vote on the shared mode at this room's own drift.
         # Default OFF -- the global demand threshold applies.
         entities.append(

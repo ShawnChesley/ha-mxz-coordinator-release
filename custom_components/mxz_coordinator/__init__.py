@@ -159,6 +159,7 @@ def _async_prune_stale_entities(
             "target", "enable", "thermostat", "drift", "fan_auto",
             "cool_exempt", "emergency_protect", "emergency_floor",
             "direction", "window_freeze_protect", "tight_demand",
+            "cool_block",
         ):
             valid.add(f"{entry.entry_id}_{zone.slug}_{suffix}")
     registry = er.async_get(hass)

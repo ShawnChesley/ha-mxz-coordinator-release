@@ -17,6 +17,9 @@ This candidate is not installed and is not yet a published HACS release.
 * IR temperature/ON input reopens heat_cool and is adopted as manual input. Stock
   CA's override confirmation and hold behavior are covered by compatibility tests.
 * Direction and freeze-protection helper registry entries are retained on reload.
+* Per-room "cool block" switch (default off): no comfort cooling for that room
+  while on; heat and eco protection unaffected; independent of the seasonal
+  cool lockout. Intended for automation (woodstove lockout).
 * Adaptive fan recovery thresholds lowered: Medium at 0.75 °F short (was 1.0),
   High at 1.5 °F (was 3.0), new Very High stage at 2.5 °F; hysteresis and
   dwell unchanged.

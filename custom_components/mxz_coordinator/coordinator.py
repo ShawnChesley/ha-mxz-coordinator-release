@@ -231,6 +231,10 @@ class Zone:
     # room (e.g. a bedroom held at a narrow band overnight) claim the shared
     # compressor at target +/- drift. Default OFF = unchanged behaviour.
     tight_demand: bool = False
+    # Local fork: cool block — while on, this room never makes a comfort cool
+    # call (demand or engage). Driven by automations such as the woodstove
+    # lockout. Independent of the seasonal cool lockout. Default OFF.
+    cool_block: bool = False
     emergency_protect: bool = False
     emergency_floor: float = 60.0
     # Local fork: window/door pause. ``contacts`` are this room's binary_sensors
@@ -1028,6 +1032,7 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 **common,
                 "cool_lockout": common["cool_lockout"] and not zone.cool_exempt,
                 "direction": zone.direction,
+                "cool_block": zone.cool_block,
             }
             # Early stop for exempt cooling — only while the lockout is on.
             stop_offset = (
@@ -1180,6 +1185,7 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "fan_hold": self._fan_latched.get(zone.climate_id, False),
                         "cool_exempt": zone.cool_exempt,
                         "tight_demand": zone.tight_demand,
+                        "cool_block": zone.cool_block,
                         "cool_stop_offset": stop_offsets[i],
                         "emergency_protect": zone.emergency_protect,
                         "emergency_floor": zone.emergency_floor,

@@ -8,6 +8,12 @@ waiting for the global threshold. Intended for a bedroom held to a narrow
 overnight band. Expect more changeovers while other rooms are heating; widen that
 room's drift to trade band width for fewer changeovers.
 
+**Per-room "cool block" (local fork).** New per-zone config switch
+`<room> cool block`, default off. While on, the room never makes a comfort cool
+call (demand or engage); heat and eco protection are unaffected. Unlike the
+seasonal cool lockout it has no ceiling and is not driven by the weather
+changeover, so an automation (e.g. a woodstove lockout) can own it.
+
 **Adaptive fan recovers harder (local fork).** Adaptive fan policy now steps to
 Medium at 0.75 °F below target (was 1.0), High at 1.5 °F (was 3.0), and a new
 Very High stage at 2.5 °F (heads without Very High fall back to native Auto). The old

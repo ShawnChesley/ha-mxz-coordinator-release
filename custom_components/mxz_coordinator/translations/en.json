@@ -326,6 +326,9 @@
       "zone_tight_demand": {
         "name": "{zone} tight demand"
       },
+      "zone_cool_block": {
+        "name": "{zone} cool block"
+      },
       "zone_emergency_protect": {
         "name": "{zone} emergency protect"
       },
