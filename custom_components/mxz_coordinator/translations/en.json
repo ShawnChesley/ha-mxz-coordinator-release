@@ -341,6 +341,14 @@
           "heat": "Heat only",
           "cool": "Cool only"
         }
+      },
+      "zone_fan_policy": {
+        "name": "{zone} fan policy",
+        "state": {
+          "legacy": "Legacy boost",
+          "native_auto": "Native Auto",
+          "adaptive": "Adaptive"
+        }
       }
     },
     "sensor": {
@@ -351,6 +359,11 @@
     "climate": {
       "zone_thermostat": {
         "name": "{zone} thermostat"
+      }
+    },
+    "button": {
+      "zone_fan_release": {
+        "name": "{zone} fan release"
       }
     }
   }

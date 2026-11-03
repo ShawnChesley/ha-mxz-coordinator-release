@@ -5,7 +5,7 @@ from __future__ import annotations
 DOMAIN = "mxz_coordinator"
 
 # climate is last so the number/switch siblings it drives are registered first.
-PLATFORMS: list[str] = ["number", "switch", "select", "sensor", "climate"]
+PLATFORMS: list[str] = ["number", "switch", "select", "sensor", "climate", "button"]
 
 # --- Config-entry keys (collected in the config flow; household-specific) ---
 CONF_PRIMARY_CLIMATE = "primary_climate"

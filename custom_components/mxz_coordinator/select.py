@@ -12,9 +12,11 @@ from typing import ClassVar
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     DIRECTION_AUTO,
@@ -27,6 +29,7 @@ from .const import (
 )
 from .coordinator import INPUT_SOURCE_SERVICE, MXZCoordinator, Zone
 from .entity import MXZEntity
+from .fan_control import POLICY_OPTIONS
 
 _OPTIONS = [MODE_COOL, MODE_HEAT, MODE_FAN_ONLY, MODE_OFF]
 
@@ -42,6 +45,7 @@ async def async_setup_entry(
         [
             MXZSharedModeSelect(coordinator),
             *(MXZZoneDirectionSelect(coordinator, zone) for zone in coordinator.zones),
+            *(MXZZoneFanPolicySelect(coordinator, zone) for zone in coordinator.zones),
         ]
     )
 
@@ -130,3 +134,32 @@ class MXZZoneDirectionSelect(MXZEntity, SelectEntity, RestoreEntity):
         ):
             self.apply_direction(option)
         await self.coordinator.async_user_changed()
+
+
+class MXZZoneFanPolicySelect(MXZEntity, CoordinatorEntity[MXZCoordinator], SelectEntity):
+    """Per-room normal fan policy: legacy | native_auto | adaptive.
+
+    ``legacy`` keeps the pre-existing boost ladder and manual latch for that
+    room (the default for every room after upgrading). The policy is stored by
+    the coordinator's fan store, not restored from entity state. Changing it
+    never releases a manual hold.
+    """
+
+    _attr_options = POLICY_OPTIONS
+    _attr_icon = "mdi:fan-chevron-up"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: MXZCoordinator, zone: Zone) -> None:
+        MXZEntity.__init__(self, coordinator, f"{zone.slug}_fan_policy")
+        CoordinatorEntity.__init__(self, coordinator)
+        self._zone = zone
+        self._attr_translation_key = "zone_fan_policy"
+        self._attr_translation_placeholders = {"zone": zone.name}
+
+    @property
+    def current_option(self) -> str:
+        return self.coordinator.fan.policy(self._zone.climate_id)
+
+    async def async_select_option(self, option: str) -> None:
+        await self.coordinator.fan.async_set_policy(self._zone.climate_id, option)
+        self.async_write_ha_state()

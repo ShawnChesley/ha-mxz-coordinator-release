@@ -30,6 +30,14 @@ class TargetInput:
         self.commanded[mode] = (value, *equivalents)
         self.candidate = None
 
+    def expect(self, mode: str, value: float, *equivalents: float) -> None:
+        """Refresh what we expect a head to report for ``mode`` without a write.
+
+        Unlike :meth:`command`, a pending candidate is kept: reconciling our own
+        expectation must not erase a genuine remote press that is still settling.
+        """
+        self.commanded[mode] = (value, *equivalents)
+
     def matches(self, mode: str, value: float | None) -> bool:
         return value is not None and any(
             math.isclose(value, expected, abs_tol=1e-6, rel_tol=0)
