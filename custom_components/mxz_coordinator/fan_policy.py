@@ -56,13 +56,13 @@ class AdaptiveSettings:
             or self.very_high_at - self.high_at <= 2 * self.hysteresis
         ):
             raise ValueError("Adaptive hysteresis bands must not overlap")
+        if self.boost_dwell_s < 0:
+            raise ValueError("Dwell must be nonnegative")
 
     @property
     def thresholds(self) -> tuple[float, float, float]:
         """Entry thresholds for MEDIUM, HIGH, VERY_HIGH (index = stage - 1)."""
         return (self.medium_at, self.high_at, self.very_high_at)
-        if self.boost_dwell_s < 0:
-            raise ValueError("Dwell must be nonnegative")
 
 
 @dataclass(frozen=True)

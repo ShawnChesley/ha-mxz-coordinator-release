@@ -80,3 +80,5 @@ def test_native_auto_rooms_unaffected() -> None:
 def test_settings_validation() -> None:
     with pytest.raises(ValueError):
         AdaptiveSettings(very_high_at=1.6)  # band overlaps High
+    with pytest.raises(ValueError):
+        AdaptiveSettings(boost_dwell_s=-1.0)
