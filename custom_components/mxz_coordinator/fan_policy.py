@@ -28,8 +28,11 @@ class FanStage(StrEnum):
 
 @dataclass(frozen=True)
 class AdaptiveSettings:
-    medium_at: float = 1.0
-    high_at: float = 3.0
+    # Local fork 2026-11-03: tuned for a capacity-limited room (Great Room).
+    # Was medium_at 1.0 / high_at 3.0, which held Medium while the room sat
+    # 2-3 F short for hours. High now starts at 1.5 F short.
+    medium_at: float = 0.75
+    high_at: float = 1.5
     hysteresis: float = 0.3
     boost_dwell_s: float = 600.0
 

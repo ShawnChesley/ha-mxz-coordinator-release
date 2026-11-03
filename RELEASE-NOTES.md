@@ -8,6 +8,11 @@ waiting for the global threshold. Intended for a bedroom held to a narrow
 overnight band. Expect more changeovers while other rooms are heating; widen that
 room's drift to trade band width for fewer changeovers.
 
+**Adaptive fan recovers harder (local fork).** Adaptive fan policy now steps to
+Medium at 0.75 °F below target (was 1.0) and High at 1.5 °F (was 3.0). The old
+thresholds held Medium for hours while a capacity-limited room sat 2–3 °F short.
+Native-auto rooms are unaffected.
+
 Verification: 711 MXZ tests passed on HA 2026.2.3, ruff clean. The 3.5.1-rc.1 base
 was recovered from the copy installed on Home Assistant (it was never committed);
 rc.1's own new tests were not recoverable.
