@@ -17,6 +17,11 @@ This candidate is not installed and is not yet a published HACS release.
 * IR temperature/ON input reopens heat_cool and is adopted as manual input. Stock
   CA's override confirmation and hold behavior are covered by compatibility tests.
 * Direction and freeze-protection helper registry entries are retained on reload.
+* Per-room "tight demand" switch (default off). When on, the room votes on the
+  shared heat/cool mode at its own drift instead of max(demand_threshold, drift),
+  so a priority room can claim the shared compressor at target + drift rather than
+  waiting for the global threshold. Expect more changeovers while other rooms heat;
+  widening that room's drift trades band width for fewer changeovers.
 
 Temperature semantics are unchanged: target 64 with drift 1 starts heat below 63
 and stops at 64. CA's floor is therefore a target, not an exact compressor start
