@@ -1849,9 +1849,9 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         We never commanded this edge, so we can't know its exact reported value:
         the firmware works in native 0.5 C steps and HA rounds the display. Expect
         the plain value and its nearby half-degree representations (one half-step
-        either way) plus the native/display equivalents. The fallback only runs
-        when this edge falls beyond the head's floor/ceiling, where a remote
-        press can't land, so the tolerance cannot mask a genuine input.
+        either way) plus the native/display equivalents -- keeping only values
+        strictly beyond the head's floor (heat edge) or ceiling (cool edge), where
+        a remote press can't land, so the tolerance cannot mask a genuine input.
         """
         if mode == MODE_HEAT:
             other = MODE_COOL
@@ -1860,11 +1860,24 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         else:
             return
         v = float(value)
+        band = self._head_safe_band(climate_id)
+
+        def _outside(x: float) -> bool:
+            # Enforced, not assumed: no expected value may sit where a remote
+            # press could land (inside the head's band), whatever the rounding.
+            if band is None:
+                return True
+            return x < band[0] - 1e-6 if other == MODE_HEAT else x > band[1] + 1e-6
+
         values: list[float] = []
         for c in (v, math.floor(v * 2) / 2, math.ceil(v * 2) / 2, round(v * 2) / 2):
             for x in (c, *self._target_equivalents(climate_id, c)):
-                if not any(math.isclose(x, y, abs_tol=1e-6) for y in values):
+                if _outside(x) and not any(
+                    math.isclose(x, y, abs_tol=1e-6) for y in values
+                ):
                     values.append(x)
+        if not values:
+            return
         journal = self._target_input.setdefault(climate_id, TargetInput())
         journal.expect(other, values[0], *values[1:])
 

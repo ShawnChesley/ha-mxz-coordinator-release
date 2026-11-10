@@ -326,3 +326,32 @@ async def test_range_only_head_keeps_existing_behavior(hass):
     await hass.async_block_till_done()
     last = heads[0].calls[-1]
     assert last.get("target_temp_low") == 61 and last.get("target_temp_high") == 65
+
+
+@pytest.mark.parametrize(
+    ("mode", "value", "band", "inside", "outside"),
+    [
+        # rounding neighbour (ceil -> 61.0) would land ON the floor: dropped
+        ("cool", 60.8, (61.0, 88.0), [61.0, 61.5], [60.8, 60.5]),
+        ("cool", 60.6, (61.0, 88.0), [61.0], [60.5]),
+        # mirror at the ceiling
+        ("heat", 88.2, (61.0, 88.0), [88.0, 87.5], [88.2, 88.5]),
+        # C-system band with 0.5 steps
+        ("cool", 15.8, (16.0, 31.0), [16.0], [15.5, 15.8]),
+    ],
+)
+async def test_expected_firmware_values_never_inside_head_band(
+    hass, fw_head, monkeypatch, mode, value, band, inside, outside
+):
+    _entry, coord, head, _zone = await _cool63(hass)
+    monkeypatch.setattr(coord, "_head_safe_band", lambda cid: band)
+    other = "heat" if mode == "cool" else "cool"
+    coord._target_input[head.entity_id].commanded.pop(other, None)
+    coord._expect_firmware_edge(head.entity_id, mode, value)
+    journal = coord._target_input[head.entity_id]
+    for x in journal.commanded.get(other, ()):
+        assert (x < band[0]) if other == "heat" else (x > band[1]), x
+    for x in inside:
+        assert not journal.matches(other, x)
+    for x in outside:
+        assert journal.matches(other, x)
