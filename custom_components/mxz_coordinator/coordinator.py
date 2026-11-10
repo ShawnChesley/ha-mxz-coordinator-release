@@ -1671,12 +1671,23 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 cur = _as_float(state.attributes.get("temperature")) if state else None
                 if edges.min_gap > 0:
                     # Two-setpoint head driven by a single setpoint (floor/ceiling
-                    # case): the firmware sets the other edge itself, about
-                    # min_gap away. Expect it as ours, never as a remote press.
-                    self._expect_unused_edge(climate_id, act, edges.low, edges.high)
+                    # case): the firmware places the other edge itself, a gap
+                    # away and rounded its own way. Expect it as ours, never as
+                    # a remote press. Re-registered each cycle, exactly like the
+                    # range path's idempotent branch; ``expect`` keeps candidates.
+                    self._expect_firmware_edge(
+                        climate_id, act, edges.low if act == MODE_COOL else edges.high
+                    )
                 if cur_mode == act and cur is not None and abs(cur - edges.active) < tol:
                     self._reconcile_target_expectation(climate_id, act, edges.active)
                     return  # idempotent
+                if edges.min_gap > 0:
+                    _LOGGER.debug(
+                        "MXZ: %s %s %.1f sent as a single setpoint (gap %.1f does "
+                        "not fit the head band %s); firmware places the other edge",
+                        climate_id, act, edges.active, edges.min_gap,
+                        self._head_safe_band(climate_id),
+                    )
                 await self.async_head_call(
                     "set_temperature",
                     {
@@ -1830,6 +1841,32 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         journal = self._target_input.setdefault(climate_id, TargetInput())
         journal.expect(other, value, *self._target_equivalents(climate_id, value))
+
+    @callback
+    def _expect_firmware_edge(self, climate_id: str, mode: str, value: float) -> None:
+        """Expect the unused edge the FIRMWARE placed after a single-setpoint write.
+
+        We never commanded this edge, so we can't know its exact reported value:
+        the firmware works in native 0.5 C steps and HA rounds the display. Expect
+        the plain value and its nearby half-degree representations (one half-step
+        either way) plus the native/display equivalents. The fallback only runs
+        when this edge falls beyond the head's floor/ceiling, where a remote
+        press can't land, so the tolerance cannot mask a genuine input.
+        """
+        if mode == MODE_HEAT:
+            other = MODE_COOL
+        elif mode == MODE_COOL:
+            other = MODE_HEAT
+        else:
+            return
+        v = float(value)
+        values: list[float] = []
+        for c in (v, math.floor(v * 2) / 2, math.ceil(v * 2) / 2, round(v * 2) / 2):
+            for x in (c, *self._target_equivalents(climate_id, c)):
+                if not any(math.isclose(x, y, abs_tol=1e-6) for y in values):
+                    values.append(x)
+        journal = self._target_input.setdefault(climate_id, TargetInput())
+        journal.expect(other, values[0], *values[1:])
 
     async def _apply_fan(self, climate_id: str, act: str, delta: float) -> None:
         """Drive the head's fan speed from ``delta`` (°F off-target). Idempotent.
