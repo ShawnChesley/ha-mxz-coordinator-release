@@ -1669,6 +1669,11 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # target_temp_low/high, so send the one setpoint they accept (#6):
                 # the clamped room target (= high edge in cool, low edge in heat).
                 cur = _as_float(state.attributes.get("temperature")) if state else None
+                if edges.min_gap > 0:
+                    # Two-setpoint head driven by a single setpoint (floor/ceiling
+                    # case): the firmware sets the other edge itself, about
+                    # min_gap away. Expect it as ours, never as a remote press.
+                    self._expect_unused_edge(climate_id, act, edges.low, edges.high)
                 if cur_mode == act and cur is not None and abs(cur - edges.active) < tol:
                     self._reconcile_target_expectation(climate_id, act, edges.active)
                     return  # idempotent
@@ -1751,9 +1756,10 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 low=low, high=high, active=high if act == MODE_COOL else low,
                 ranged=False, moved=False, min_gap=0.0,
             )
-        min_gap = 2.0 if self.celsius else 3.6
+        fw_gap = 2.0 if self.celsius else 3.6  # the firmware's own minimum
         gstep = self.target_step or 1.0
-        min_gap = math.ceil(min_gap / gstep - 1e-9) * gstep
+        min_gap = math.ceil(fw_gap / gstep - 1e-9) * gstep
+        wanted = high if act == MODE_COOL else low
         low, high, moved = widen_unused_edge(
             mode=act,
             low=low,
@@ -1761,6 +1767,19 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             min_gap=min_gap,
             band=self._head_safe_band(climate_id),
         )
+        if moved and features & 1:
+            # The gap could only be met by moving the ACTIVE edge (e.g. cool 63
+            # under a 61 F floor -> 61/65), because HA range-checks both edges
+            # and rejects an unused edge below the head's floor. A head that
+            # also accepts a single setpoint (TARGET_TEMPERATURE == 1) takes
+            # just the active value; the Mahtanar firmware then places the
+            # unused edge itself, below the floor if it must (measured on the
+            # FH09: cool 63 -> 59.5/63). The room gets the target it asked for.
+            return _HeadEdges(
+                low=wanted - fw_gap if act == MODE_COOL else wanted,
+                high=wanted if act == MODE_COOL else wanted + fw_gap,
+                active=wanted, ranged=False, moved=False, min_gap=min_gap,
+            )
         return _HeadEdges(
             low=low, high=high, active=high if act == MODE_COOL else low,
             ranged=True, moved=moved, min_gap=min_gap,
