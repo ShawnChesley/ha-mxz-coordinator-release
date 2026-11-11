@@ -1308,9 +1308,18 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 eco=zone_eco,
                 idle=self._idle_act_for(zone.climate_id),
             )
+            # Tight-demand rooms cool the head to one step BELOW the room
+            # target. With the head aimed exactly at target it eases off just
+            # above it (63.2-63.6 F for a 63 F target on the FH09, 2026-11-10),
+            # so the room never reaches the release point and the shared
+            # compressor stays in cool for hours. The vote/release logic still
+            # uses the real target; only the head's setpoint moves.
+            sp_target = ztarget
+            if zone.tight_demand and state == MODE_COOL and not zone_eco and not emergency:
+                sp_target = ztarget - (0.5 if self.celsius else 1.0)
             low, high = setpoints(
                 mode=state,
-                target=ztarget,
+                target=sp_target,
                 eco=zone_eco,
                 clamp_min=self.clamp_min,
                 clamp_max=self.clamp_max,

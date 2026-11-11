@@ -89,3 +89,53 @@ async def test_tight_master_inside_drift_does_not_flip(hass: HomeAssistant) -> N
     plan = entry.runtime_data.data
     assert plan["primary_demand"] == "neutral"
     assert plan["state"] == "heat"
+
+
+def _cool_edge(hass: HomeAssistant, head: str) -> float:
+    st = hass.states.get(head)
+    a = st.attributes
+    return a.get("target_temp_high") if a.get("target_temp_high") is not None else a.get("temperature")
+
+
+async def test_tight_cool_aims_head_one_step_below_target(hass: HomeAssistant) -> None:
+    """Head aimed exactly at target eases off just above it and never releases
+    the shared compressor; a tight-demand room aims the head 1 F lower."""
+    entry, head_a, _b = await _overnight(hass, tight=True)
+    assert hass.states.get(head_a).state == "cool"
+    assert _cool_edge(hass, head_a) == 63  # room target 64
+    # The vote/release still uses the real target: 64 releases cool.
+    await _set_temp(hass, SENSOR_A, 64)
+    entry.runtime_data._last_mode_change_ts = 0.0
+    await _recompute(hass, entry)
+    await _recompute(hass, entry)
+    assert entry.runtime_data.data["state"] == "heat"
+
+
+async def test_normal_room_cool_head_at_target(hass: HomeAssistant) -> None:
+    """Switch off: cool head setpoint is exactly the room target (unchanged)."""
+    entry, _a, _b = await _climate_setup(hass, **{CONF_MODE_HYSTERESIS: 0})
+    await _enable(hass, entry, "_coordinator_enable")
+    await _set_mode(hass, _eid(hass, entry, "_primary_thermostat"),
+                    hvac_mode="cool", temperature=70)
+    await _set_temp(hass, SENSOR_A, 74)
+    await _set_temp(hass, SENSOR_B, 74)
+    await _recompute(hass, entry)
+    head_a = entry.runtime_data.zones[0].climate_id
+    assert hass.states.get(head_a).state == "cool"
+    assert _cool_edge(hass, head_a) == 70
+
+
+async def test_tight_room_heat_head_at_target(hass: HomeAssistant) -> None:
+    """The offset is cool-only: a tight room heating aims exactly at target."""
+    entry, _a, _b = await _climate_setup(hass, **{CONF_MODE_HYSTERESIS: 0})
+    await _enable(hass, entry, "_coordinator_enable", "_primary_tight_demand")
+    await _set_mode(hass, _eid(hass, entry, "_primary_thermostat"),
+                    hvac_mode="heat", temperature=68)
+    await _set_temp(hass, SENSOR_A, 64)
+    await _set_temp(hass, SENSOR_B, 64)
+    await _recompute(hass, entry)
+    head_a = entry.runtime_data.zones[0].climate_id
+    st = hass.states.get(head_a)
+    assert st.state == "heat"
+    low = st.attributes.get("target_temp_low")
+    assert (low if low is not None else st.attributes.get("temperature")) == 68
