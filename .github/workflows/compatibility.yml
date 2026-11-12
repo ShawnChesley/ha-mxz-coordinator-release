@@ -39,3 +39,25 @@ jobs:
         with:
           name: compatibility-environment
           path: test-environment.txt
+
+  installed-ca:
+    # The Climate Advisor actually installed alongside this MXZ (ShawnChesley fork,
+    # 0.7.107 + sleep offset). Pinned by commit; move the pin when CA is updated.
+    name: HA 2026.10.2 / CA 0.7.107 (installed fork)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ShawnChesley/ha-climate-advisor-release
+          ref: 784f5d7316c5f1cebb4774db624832ecb4c98761 # v0.7.107 + sleep offset (main, PR #3)
+          path: ca-source
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install matching official HA harness
+        run: pip install homeassistant==2026.10.2 pytest-homeassistant-custom-component==0.13.373 'anthropic>=0.49.0' ruff==0.16.0
+      - run: pip check
+      - name: Run installed CA against MXZ
+        run: python tools/run_ca_compat.py "$GITHUB_WORKSPACE/ca-source"

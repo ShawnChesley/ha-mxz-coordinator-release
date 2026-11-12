@@ -2473,7 +2473,6 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         climate_id = data["entity_id"]
         prior = self._target_input.get(climate_id)
-        prior_targets = dict(prior.commanded) if prior is not None else {}
         prior_revisions = dict(prior.revisions) if prior is not None else {}
         # The target expectation is independent of fan/mode echo timestamps.
         # Stamp BEFORE dispatch because a synchronous head can report inline.
@@ -2532,15 +2531,15 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # after this one and succeeded while this one was still in flight).
             ti = self._target_input.get(climate_id)
             if target_touched and ti is not None:
-                rolled = [
-                    m for m, r in our_revisions.items()
-                    if ti.rollback(m, r, prior_targets.get(m))
-                ]
+                rolled = [m for m, r in our_revisions.items() if ti.rollback(m, r)]
                 if rolled:
                     self._cancel_target_candidate(climate_id)
                 if prior is None and not ti.commanded and ti.candidate is None:
                     self._target_input.pop(climate_id, None)
             raise
+        if (ti := self._target_input.get(climate_id)) is not None:
+            for rev in our_revisions.values():
+                ti.settle(rev)
 
     def _target_equivalents(self, climate_id: str, target: float) -> tuple[float, ...]:
         """The known native-step/display representation of our target, not a band.

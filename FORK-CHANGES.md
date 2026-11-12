@@ -1,6 +1,6 @@
 # Fork changes for review
 
-Released as 3.5.1 through HACS from ShawnChesley/ha-mxz-coordinator-release.
+Prepared for release as 3.5.1 (pending: not yet tagged, published or installed through HACS).
 
 * Room thermostats support off, heat, cool and the original single-target heat_cool.
   Direction constrains normal demand; it never gives a room authority to bypass
@@ -34,7 +34,8 @@ Released as 3.5.1 through HACS from ShawnChesley/ha-mxz-coordinator-release.
   the firmware's minimum gap would otherwise raise it.
 * Adaptive fan error is converted to °F on Celsius installations.
 * A failed head write rolls back only its own target expectation (per-mode
-  revision), never a newer write's.
+  revision), never a newer write's; if overlapping writes all fail, the
+  expectation returns to the last one that did not fail.
 
 Temperature semantics are unchanged: target 64 with drift 1 starts heat below 63
 and stops at 64. CA's floor is therefore a target, not an exact compressor start

@@ -95,14 +95,74 @@ async def test_unconverted_celsius_error_would_pick_a_lower_stage(hass: HomeAssi
 # ── 2. Rollback must not erase a newer write ────────────────────────────
 
 
-def test_target_input_rollback_only_when_still_ours() -> None:
+def _base72() -> TargetInput:
     ti = TargetInput()
-    a = ti.command("heat", 72.0)
-    b = ti.command("heat", 74.0)  # newer write while A in flight
-    assert ti.rollback("heat", a, None) is False
-    assert ti.matches("heat", 74.0)
-    assert ti.rollback("heat", b, (72.0,)) is True
+    ti.settle(ti.command("heat", 72.0))  # an earlier, successful write
+    return ti
+
+
+def test_rollback_skips_when_newer_write_exists() -> None:
+    ti = _base72()
+    a = ti.command("heat", 75.0)
+    b = ti.command("heat", 73.0)  # newer write while A in flight
+    assert ti.rollback("heat", a) is False
+    ti.settle(b)  # B succeeds
+    assert ti.matches("heat", 73.0)
+
+
+def test_both_overlapping_writes_fail_a_first() -> None:
+    """72 expected; A stages 75; B stages 73; A fails; B fails -> back to 72, not 75."""
+    ti = _base72()
+    a = ti.command("heat", 75.0)
+    b = ti.command("heat", 73.0)
+    assert ti.rollback("heat", a) is False
+    assert ti.rollback("heat", b) is True
     assert ti.matches("heat", 72.0)
+    assert not ti.matches("heat", 75.0)
+
+
+def test_both_overlapping_writes_fail_b_first() -> None:
+    ti = _base72()
+    a = ti.command("heat", 75.0)
+    b = ti.command("heat", 73.0)
+    assert ti.rollback("heat", b) is True  # B's predecessor A is still in flight
+    assert ti.matches("heat", 75.0)
+    assert ti.rollback("heat", a) is True
+    assert ti.matches("heat", 72.0)
+
+
+def test_older_succeeds_newer_fails_restores_older() -> None:
+    ti = _base72()
+    a = ti.command("heat", 75.0)
+    b = ti.command("heat", 73.0)
+    ti.settle(a)
+    assert ti.rollback("heat", b) is True
+    assert ti.matches("heat", 75.0)
+
+
+def test_three_writes_middle_and_last_fail() -> None:
+    ti = _base72()
+    a = ti.command("heat", 74.0)
+    b = ti.command("heat", 75.0)
+    c = ti.command("heat", 76.0)
+    ti.settle(a)
+    ti.rollback("heat", b)
+    assert ti.rollback("heat", c) is True
+    assert ti.matches("heat", 74.0)
+
+
+def test_first_ever_write_fails_leaves_no_expectation() -> None:
+    ti = TargetInput()
+    a = ti.command("heat", 75.0)
+    assert ti.rollback("heat", a) is True
+    assert "heat" not in ti.commanded
+
+
+def test_stamp_history_is_bounded() -> None:
+    ti = TargetInput()
+    for i in range(500):
+        ti.command("heat", 60.0 + (i % 10))
+    assert len(ti._stamps) <= 64
 
 
 async def test_failed_older_write_keeps_newer_expectation(hass: HomeAssistant, monkeypatch) -> None:
@@ -137,6 +197,44 @@ async def test_failed_older_write_keeps_newer_expectation(hass: HomeAssistant, m
     assert ti.candidate is None
     # B's echo is recognised as ours, not as a remote press.
     assert ti.observe("heat", 73, 0.0, 0) == "echo"
+
+
+async def test_both_overlapping_head_writes_fail(hass: HomeAssistant, monkeypatch) -> None:
+    """Real head-call path: A (75) and B (73) both rejected -> expectation back to 72."""
+    _entry, coord, head, _zone = await _heat(hass)
+    assert coord._target_input[head.entity_id].matches("heat", 72)
+    release_a = asyncio.Event()
+    release_b = asyncio.Event()
+
+    async def call(self, domain, service, data, *args, **kwargs):
+        if data.get("temperature") == 75:
+            await release_a.wait()
+            raise HomeAssistantError("Simulated rejected write A")
+        if data.get("temperature") == 73:
+            await release_b.wait()
+            raise HomeAssistantError("Simulated rejected write B")
+        raise AssertionError("unexpected call")
+
+    monkeypatch.setattr(type(hass.services), "async_call", call)
+    entity = head.entity_id
+    task_a = hass.async_create_task(
+        coord.async_head_call("set_temperature", {"entity_id": entity, "hvac_mode": "heat", "temperature": 75})
+    )
+    await asyncio.sleep(0)
+    task_b = hass.async_create_task(
+        coord.async_head_call("set_temperature", {"entity_id": entity, "hvac_mode": "heat", "temperature": 73})
+    )
+    await asyncio.sleep(0)
+    release_a.set()
+    with pytest.raises(HomeAssistantError):
+        await task_a
+    release_b.set()
+    with pytest.raises(HomeAssistantError):
+        await task_b
+    ti = coord._target_input[entity]
+    assert ti.matches("heat", 72)
+    assert not ti.matches("heat", 75)
+    assert not ti.matches("heat", 73)
 
 
 async def test_failed_only_write_restores_previous_expectation(hass: HomeAssistant, monkeypatch) -> None:

@@ -1,4 +1,4 @@
-# 3.5.1
+# 3.5.1 (pending release)
 
 Everything since 3.4.2. Recovers the 3.5.1-rc.1 base that ran on Home Assistant
 (never committed upstream), adds the local-fork features below, and fixes two
@@ -37,15 +37,24 @@ reported edge is expected, so it is not mistaken for remote input.
   the policy thresholds (which are °F deltas) apply. Previously 1 °C short was
   treated as 1 °F short and selected a lower fan stage.
 - A failed head write no longer rolls back a newer write's target expectation.
-  Expectations carry a per-mode revision; a failed write restores only its own.
+  Expectations carry a per-mode revision and the expectation they replaced; a
+  failed write restores only its own, and when overlapping writes all fail the
+  expectation returns to the last one that did not fail (never a rejected value).
   Previously an older failing write could erase a newer one's expectation, and the
   newer write's echo could then be taken for a remote press.
 
-Verification: 767 MXZ tests passed (HA 2026.2.3 harness locally; the CI matrix
-and the stock-CA compatibility workflow run on the PR); ruff clean.
+Verification: 774 MXZ tests passed (HA 2026.2.3 harness locally; the CI matrix
+and the CA compatibility workflow run on the PR); ruff clean. The compatibility
+workflow now runs against both stock CA 0.7.106 and the installed CA fork
+(0.7.107 + sleep offset): 11 passed, 1 expected failure locally against the fork.
+The stock-CA IR-override scenario had failed in CI since 3.5.1-rc.1: rc.1 records
+an expectation for every head write, so a differing remote setpoint is adopted
+only after it holds for 15 s (the designed settle). The test now waits for that
+settle; Climate Advisor's override detection and resume are unchanged.
 Installation: the code through the tight-cool change ran on Home Assistant before
-release (installed by hand, verified byte-identical to commit 059a247). The two
-release-review fixes are new in this release and are installed through HACS.
+release (installed by hand, verified byte-identical to commit 059a247). The
+release-review fixes are new in this release; installation through HACS is
+pending.
 
 # 3.4.1 release candidate
 
