@@ -2504,6 +2504,8 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             m: r for m, r in (current.revisions.items() if current is not None else ())
             if prior_revisions.get(m) != r
         }
+        for rev in our_revisions.values():
+            current.hold(rev)
         now = time.monotonic()
         ctx = Context()
         self._cmd_contexts[ctx.id] = now

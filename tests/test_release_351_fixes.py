@@ -158,11 +158,39 @@ def test_first_ever_write_fails_leaves_no_expectation() -> None:
     assert "heat" not in ti.commanded
 
 
-def test_stamp_history_is_bounded() -> None:
+def test_history_stays_small_when_nothing_is_in_flight() -> None:
     ti = TargetInput()
     for i in range(500):
-        ti.command("heat", 60.0 + (i % 10))
-    assert len(ti._stamps) <= 64
+        ti.settle(ti.command("heat", 60.0 + (i % 10)))
+        ti.expect("cool", 75.0 + (i % 3))
+    assert len(ti._stamps) <= 1
+    assert not ti._pending and not ti._failed
+
+
+def test_delayed_failure_keeps_its_ancestry() -> None:
+    """A write still in flight is never forgotten, however many writes follow it."""
+    ti = _base72()
+    a = ti.command("heat", 75.0)
+    for i in range(500):
+        ti.settle(ti.command("cool", 76.0 + (i % 5)))
+        ti.expect("cool", 76.0)
+    assert a in ti._stamps
+    assert ti.rollback("heat", a) is True
+    assert ti.matches("heat", 72.0)
+
+
+def test_delayed_double_failure_keeps_failed_link() -> None:
+    """A fails early, B fails much later: B still walks past A to 72."""
+    ti = _base72()
+    a = ti.command("heat", 75.0)
+    b = ti.command("heat", 73.0)
+    assert ti.rollback("heat", a) is False
+    for i in range(500):
+        ti.settle(ti.command("cool", 76.0 + (i % 5)))
+    assert a in ti._stamps  # failed link kept while B is in flight
+    assert ti.rollback("heat", b) is True
+    assert ti.matches("heat", 72.0)
+    assert not ti._stamps and not ti._failed and not ti._pending
 
 
 async def test_failed_older_write_keeps_newer_expectation(hass: HomeAssistant, monkeypatch) -> None:

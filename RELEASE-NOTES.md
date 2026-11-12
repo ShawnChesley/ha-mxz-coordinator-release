@@ -32,6 +32,13 @@ target (e.g. cool 63 °F on a 61 °F-floor head was sent as 61/65 and cooled to
 65), a single setpoint is sent and the firmware places the other edge. Its
 reported edge is expected, so it is not mistaken for remote input.
 
+**Remote (IR) temperature changes take about 15 s to appear.** A temperature set
+on a head's own remote reaches the room's virtual thermostat once it has held for
+about 15 seconds, not instantly. Since 3.5.1-rc.1 the coordinator records what it
+expects every head to report, so a differing report must persist before it is
+treated as a person's input (a transient report is not adopted). Climate
+Advisor's override detection then proceeds as before.
+
 **Release-review fixes.**
 - Adaptive fan on Celsius installations: the room error is converted to °F before
   the policy thresholds (which are °F deltas) apply. Previously 1 °C short was
@@ -40,6 +47,7 @@ reported edge is expected, so it is not mistaken for remote input.
   Expectations carry a per-mode revision and the expectation they replaced; a
   failed write restores only its own, and when overlapping writes all fail the
   expectation returns to the last one that did not fail (never a rejected value).
+  Ancestry is kept for every write still in flight, however late its result.
   Previously an older failing write could erase a newer one's expectation, and the
   newer write's echo could then be taken for a remote press.
 
