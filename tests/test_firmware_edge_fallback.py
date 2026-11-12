@@ -177,7 +177,14 @@ async def test_heat_to_cool_is_one_combined_write_and_transient_old_edge_ignored
         State(head.entity_id, "heat", {"temperature": 72, "fan_mode": "auto"}),
         State(head.entity_id, "cool", {"temperature": old_cool, "fan_mode": "auto"}),
     )
+    # The room was latched in heat; a direction flip coasts for one cycle before it
+    # engages cool (engage_with_latch). Run that cycle explicitly instead of relying
+    # on a background refresh: HA 2026.2 ran one after the target change, 2026.10
+    # does not without time passing.
     await _recompute(hass, entry)
+    if entry.runtime_data.data[f"{zone.slug}_engage"] == "satisfied":
+        await _recompute(hass, entry)  # the coast cycle was this one; engage now
+    assert entry.runtime_data.data[f"{zone.slug}_engage"] == "cool"
     temp_calls = [c for c in head.calls if "hvac_mode" in c]
     assert temp_calls and all("temperature" in c for c in temp_calls)
     assert temp_calls[-1] == {"entity_id": head.entity_id, "hvac_mode": "cool", "temperature": 63} or (
