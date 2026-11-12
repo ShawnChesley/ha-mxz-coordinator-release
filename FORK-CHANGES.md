@@ -1,6 +1,6 @@
 # Fork changes for review
 
-Prepared for release as 3.5.1 (pending: not yet tagged, published or installed through HACS).
+Released as 3.5.1 (tag v3.5.1) from ShawnChesley/ha-mxz-coordinator-release for HACS.
 
 * Room thermostats support off, heat, cool and the original single-target heat_cool.
   Direction constrains normal demand; it never gives a room authority to bypass

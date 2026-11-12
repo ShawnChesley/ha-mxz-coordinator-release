@@ -1,4 +1,4 @@
-# 3.5.1 (pending release)
+# 3.5.1
 
 Everything since 3.4.2. Recovers the 3.5.1-rc.1 base that ran on Home Assistant
 (never committed upstream), adds the local-fork features below, and fixes two
@@ -61,8 +61,9 @@ only after it holds for 15 s (the designed settle). The test now waits for that
 settle; Climate Advisor's override detection and resume are unchanged.
 Installation: the code through the tight-cool change ran on Home Assistant before
 release (installed by hand, verified byte-identical to commit 059a247). The
-release-review fixes are new in this release; installation through HACS is
-pending.
+release-review fixes had not run on Home Assistant before this release. Install
+through HACS from ShawnChesley/ha-mxz-coordinator-release (tag v3.5.1) with the
+controlled installation steps in RELEASE-PROCESS.md.
 
 # 3.4.1 release candidate
 
