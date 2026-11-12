@@ -147,6 +147,7 @@ from .logic import (
     engage_with_latch,
     fan_for_delta,
     head_action,
+    head_setpoint_target,
     room_call,
     season_lockouts,
     setpoints,
@@ -1314,9 +1315,10 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # so the room never reaches the release point and the shared
             # compressor stays in cool for hours. The vote/release logic still
             # uses the real target; only the head's setpoint moves.
-            sp_target = ztarget
-            if zone.tight_demand and state == MODE_COOL and not zone_eco and not emergency:
-                sp_target = ztarget - (0.5 if self.celsius else 1.0)
+            sp_target = head_setpoint_target(
+                target=ztarget, mode=state, tight_demand=zone.tight_demand,
+                eco=zone_eco, emergency=emergency, celsius=self.celsius,
+            )
             low, high = setpoints(
                 mode=state,
                 target=sp_target,
@@ -2470,10 +2472,9 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         a person at the remote — and is classified in ``_on_head_change``.
         """
         climate_id = data["entity_id"]
-        prior_targets = (
-            dict(self._target_input[climate_id].commanded)
-            if climate_id in self._target_input else None
-        )
+        prior = self._target_input.get(climate_id)
+        prior_targets = dict(prior.commanded) if prior is not None else {}
+        prior_revisions = dict(prior.revisions) if prior is not None else {}
         # The target expectation is independent of fan/mode echo timestamps.
         # Stamp BEFORE dispatch because a synchronous head can report inline.
         state = self.hass.states.get(climate_id)
@@ -2497,6 +2498,13 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 )
         elif "hvac_mode" in data:
             self._cancel_target_candidate(climate_id)
+        # The expectations THIS call recorded (no await since the snapshot above, so
+        # every revision change is ours) — rolled back per mode if the write fails.
+        current = self._target_input.get(climate_id)
+        our_revisions = {
+            m: r for m, r in (current.revisions.items() if current is not None else ())
+            if prior_revisions.get(m) != r
+        }
         now = time.monotonic()
         ctx = Context()
         self._cmd_contexts[ctx.id] = now
@@ -2519,13 +2527,19 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "climate", service, data, blocking=True, context=ctx
             )
         except HomeAssistantError:
-            # A rejected write must not create a permanent echo expectation.
-            if target_touched:
-                self._cancel_target_candidate(climate_id)
-                if prior_targets is None:
+            # A rejected write must not create a permanent echo expectation — but it
+            # must not erase a NEWER write's expectation either (a write that started
+            # after this one and succeeded while this one was still in flight).
+            ti = self._target_input.get(climate_id)
+            if target_touched and ti is not None:
+                rolled = [
+                    m for m, r in our_revisions.items()
+                    if ti.rollback(m, r, prior_targets.get(m))
+                ]
+                if rolled:
+                    self._cancel_target_candidate(climate_id)
+                if prior is None and not ti.commanded and ti.candidate is None:
                     self._target_input.pop(climate_id, None)
-                else:
-                    self._target_input[climate_id] = TargetInput(commanded=prior_targets)
             raise
 
     def _target_equivalents(self, climate_id: str, target: float) -> tuple[float, ...]:

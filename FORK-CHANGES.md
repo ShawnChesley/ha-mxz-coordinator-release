@@ -1,6 +1,6 @@
 # Fork changes for review
 
-This candidate is not installed and is not yet a published HACS release.
+Released as 3.5.1 through HACS from ShawnChesley/ha-mxz-coordinator-release.
 
 * Room thermostats support off, heat, cool and the original single-target heat_cool.
   Direction constrains normal demand; it never gives a room authority to bypass
@@ -28,6 +28,13 @@ This candidate is not installed and is not yet a published HACS release.
   so a priority room can claim the shared compressor at target + drift rather than
   waiting for the global threshold. Expect more changeovers while other rooms heat;
   widening that room's drift trades band width for fewer changeovers.
+  While a tight room cools (not eco/emergency) its head is aimed one step below
+  the room target (1 °F / 0.5 °C) so it reaches the release point.
+* Cool target near a two-setpoint head's floor is sent as a single setpoint when
+  the firmware's minimum gap would otherwise raise it.
+* Adaptive fan error is converted to °F on Celsius installations.
+* A failed head write rolls back only its own target expectation (per-mode
+  revision), never a newer write's.
 
 Temperature semantics are unchanged: target 64 with drift 1 starts heat below 63
 and stops at 64. CA's floor is therefore a target, not an exact compressor start

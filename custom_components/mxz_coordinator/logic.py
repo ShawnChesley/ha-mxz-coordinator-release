@@ -357,6 +357,22 @@ def priority_hold(
     return any(e == current for e in engaged[:first_opposite])
 
 
+def head_setpoint_target(
+    *, target: float, mode: str, tight_demand: bool, eco: bool, emergency: bool, celsius: bool
+) -> float:
+    """The target the head's setpoint is computed from (the room target is unchanged).
+
+    Tight-demand rooms cool the head one step BELOW the room target (1 F / 0.5 C):
+    aimed exactly at target the head eases off just above it and the room never
+    reaches its release point, so the shared compressor stays in cool. Only plain
+    cooling is biased — never heat, eco protection edges or emergency operation.
+    The demand vote and release always use the real room target.
+    """
+    if tight_demand and mode == MODE_COOL and not eco and not emergency:
+        return target - (0.5 if celsius else 1.0)
+    return target
+
+
 def setpoints(
     *,
     mode: str,

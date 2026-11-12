@@ -434,6 +434,10 @@ class FanController:
             error = None
             if ok and isinstance(temp, (int, float)):
                 error = (target - temp) if act == MODE_HEAT else (temp - target)
+                # The policy thresholds are Fahrenheit deltas (High at 1.5 F short,
+                # ...); a Celsius installation's error is converted, not reused.
+                if self.coord.celsius:
+                    error *= 1.8
             decision = head.room.decide(
                 mode=act, error_f=error, now=time.monotonic(), satisfied=eco,
             )
