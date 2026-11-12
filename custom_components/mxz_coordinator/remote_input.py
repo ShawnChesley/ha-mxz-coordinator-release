@@ -26,13 +26,14 @@ Rules (for a change already judged NOT to be the coordinator's own echo):
 
 * power: head awake -> off            => manual OFF (authoritative for the room)
          head off   -> awake          => manual ON
-* temperature: head in heat/cool reporting ``temperature`` T, and the remote record
+* temperature: head's mode or ``temperature`` changed, head in heat/cool reporting T,
+  and the remote record
   holds a previous externally observed temperature P for that SAME mode with
   |T - P| >= step/2                   => adopt T as the room target.
   (No record for that mode yet => record T, adopt nothing.)
-  The record is updated with T on every external heat/cool observation, so a
-  fan/power/mode/vane press that merely re-sends an unchanged remote display
-  never moves the target.
+  Fan/vane-only reports do not consult or update the temperature record. When
+  temperature evidence exists, an unchanged remote display is recorded without
+  adopting a new target.
 * mode: never adopted (shared-mode arbitration stays with the coordinator).
 * fan: not handled here — the existing manual-fan latch observes it.
 """
@@ -152,7 +153,14 @@ def classify_external(
         intent.manual_on = True
         intent.notes.append(f"power: off->{new.mode}")
 
-    if new.mode in TEMP_MODES and new.temperature is not None:
+    # A fan-only (or vane-only) update contains the head's current setpoint,
+    # not evidence that the person adjusted the remote temperature. The remote
+    # record may legitimately predate a CA/coordinator target write. Comparing
+    # that stale record on every fan report adopts an unrelated temperature.
+    temperature_evidence = (
+        old.mode != new.mode or old.temperature != new.temperature
+    )
+    if temperature_evidence and new.mode in TEMP_MODES and new.temperature is not None:
         prev = record.get(new.mode)
         tol = (step or 1.0) / 2.0
         if prev is None:

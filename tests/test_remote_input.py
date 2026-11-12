@@ -142,6 +142,22 @@ def test_half_step_resolution() -> None:
     )
 
 
+@pytest.mark.parametrize("mode", ["heat", "cool"])
+@pytest.mark.parametrize("remembered", [None, 68.0])
+def test_fan_only_update_does_not_adopt_or_record_temperature(mode, remembered):
+    """A stale IR record is not evidence of a new temperature button press."""
+    record = RemoteRecord()
+    if remembered is not None:
+        record.set(mode, remembered)
+    intent = classify_external(
+        HeadObs(mode, 72.0, "low"), HeadObs(mode, 72.0, "auto"),
+        record, step=0.5,
+    )
+    assert not intent.any
+    assert not intent.record_changed
+    assert record.get(mode) == remembered
+
+
 def test_record_round_trip() -> None:
     rec = RemoteRecord.from_dict({"cool": "68", "heat": None, "junk": 1})
     assert rec.as_dict() == {"cool": 68.0, "heat": None}
@@ -348,6 +364,94 @@ def _inputs(hass: HomeAssistant) -> list[dict[str, Any]]:
         "mxz_coordinator_input", callback(lambda e: out.append(dict(e.data)))
     )
     return out
+
+
+@pytest.mark.parametrize("mode", ["heat", "cool"])
+async def test_fan_only_keeps_direction_target_and_provenance(hass, mode):
+    """Replay Great Room's LOW -> AUTO with an older IR temperature record."""
+    from homeassistant.core import State
+
+    _entry, coord, heads = await _setup(hass)
+    head, zone = heads[0], coord.zones[0]
+    coord.set_zone_input(zone, source="service", target=72, enable=True, direction=mode)
+    coord.remote_record(head.entity_id).set(mode, 68.0)
+    before = (zone.direction, zone.target, zone.enable, zone.input_generation,
+              zone.input_source, zone.input_kind)
+    _age_commands(coord)
+    coord._classify_head_input(
+        head.entity_id,
+        State(head.entity_id, mode, {"temperature": 72.0, "fan_mode": "low"}),
+        State(head.entity_id, mode, {"temperature": 72.0, "fan_mode": "auto"}),
+    )
+    assert (zone.direction, zone.target, zone.enable, zone.input_generation,
+            zone.input_source, zone.input_kind) == before
+
+
+@pytest.mark.parametrize("mode", ["heat", "cool"])
+@pytest.mark.parametrize("fan", ["low", "auto"])
+async def test_real_target_change_preserves_direction_without_mode_change(hass, mode, fan):
+    from homeassistant.core import State
+
+    _entry, coord, heads = await _setup(hass)
+    head, zone = heads[0], coord.zones[0]
+    coord.set_zone_input(zone, source="service", target=72, enable=True, direction=mode)
+    coord.remote_record(head.entity_id).set(mode, 72.0)
+    _age_commands(coord)
+    coord._classify_head_input(
+        head.entity_id,
+        State(head.entity_id, mode, {"temperature": 72.0, "fan_mode": "low"}),
+        State(head.entity_id, mode, {"temperature": 71.0, "fan_mode": fan}),
+    )
+    assert zone.target == 71.0
+    assert zone.direction == mode
+    assert zone.input_source == "head_manual"
+    assert zone.input_kind == "target"
+
+
+@pytest.mark.parametrize("restore_at", [*range(6, 61), 10.1])
+async def test_oct22_fan_and_setpoint_blip_replay(hass, monkeypatch, restore_at):
+    """The captured replay, including slight jitter at the echo-window boundary.
+
+    Feed contextless head reports through the real coordinator classifier.
+    Keep timestamps deterministic without advancing HA's background timers.
+    """
+    from types import SimpleNamespace
+
+    from homeassistant.core import State
+
+    from custom_components.mxz_coordinator import coordinator as coordinator_module
+    from custom_components.mxz_coordinator.target_input import TargetInput
+
+    _entry, coord, heads = await _setup(hass)
+    head, zone = heads[0], coord.zones[0]
+    coord.target_step = 0.5  # expose half-degree adoption instead of rounding it away
+    coord.set_zone_input(
+        zone, source="service", target=72, enable=True, direction="heat"
+    )
+    record = coord.remote_record(head.entity_id)
+    record.heat = 71.5
+    generation = zone.input_generation
+    t0 = 1000.0
+    # A Coordinator-issued Low fan write. No mode/target was commanded in it.
+    coord._last_head_cmd[head.entity_id] = (t0, None, "low")
+    journal = coord._target_input.setdefault(head.entity_id, TargetInput())
+    journal.command("heat", 72.0, 71.5)  # native 22.0 C / HA display equivalent
+    old = State(head.entity_id, "heat", {"temperature": 72.0, "fan_mode": "auto"})
+    for elapsed, temperature in ((0.12, 72.0), (6.0, 71.5), (restore_at, 72.0)):
+        new = State(
+            head.entity_id, "heat", {"temperature": temperature, "fan_mode": "low"}
+        )
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                coordinator_module, "time",
+                SimpleNamespace(monotonic=lambda elapsed=elapsed: t0 + elapsed),
+            )
+            coord._classify_head_input(head.entity_id, old, new)
+        assert zone.direction == "heat", f"direction changed at +{elapsed}s"
+        assert zone.target == 72, f"target changed at +{elapsed}s"
+        assert record.heat == 71.5, f"remote record changed at +{elapsed}s"
+        assert zone.input_generation == generation, f"input adopted at +{elapsed}s"
+        old = new
 
 
 async def test_own_commands_are_never_adopted(hass: HomeAssistant) -> None:

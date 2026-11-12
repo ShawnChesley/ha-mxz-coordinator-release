@@ -115,6 +115,17 @@ async def test_ir_remote_override_is_respected_by_stock_ca(hass: HomeAssistant, 
     freezer.tick(timedelta(seconds=10)); _age_commands(coord)
     head.remote("heat", 74.0, "auto")
     await hass.async_block_till_done()
+    # A remote setpoint that differs from MXZ's own expectation is adopted only once
+    # it has held for TARGET_SETTLE_S (15 s) -- a transient head report is not a
+    # person. (Before 3.5.1-rc.1 this head had no recorded expectation, so the
+    # value was adopted at once and this test asserted without waiting.)
+    from pytest_homeassistant_custom_component.common import async_fire_time_changed
+
+    from custom_components.mxz_coordinator.target_input import TARGET_SETTLE_S
+
+    freezer.tick(timedelta(seconds=TARGET_SETTLE_S + 1))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
     await _recompute(hass, entry)
     st = hass.states.get(therm)
     assert st.attributes["temperature"] == 74

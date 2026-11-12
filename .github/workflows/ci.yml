@@ -21,6 +21,9 @@ jobs:
       - uses: home-assistant/actions/hassfest@master
 
   hacs:
+    # HACS rejects private repositories before inspecting any source. Keep
+    # distribution validation enabled for public release repositories.
+    if: ${{ !github.event.repository.private }}
     name: HACS
     runs-on: ubuntu-latest
     steps:

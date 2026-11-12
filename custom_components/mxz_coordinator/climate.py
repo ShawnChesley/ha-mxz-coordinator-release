@@ -285,9 +285,13 @@ class MXZRoomClimate(MXZEntity, CoordinatorEntity[MXZCoordinator], ClimateEntity
         commanded = state.attributes.get("fan_mode") if state else None
         if commanded is None:
             return None
+        coord = self.coordinator
+        if coord.fan.managed(self._head_id):
+            # Per-room policy: only a hold is a requested speed (shown even if
+            # the head has not taken it yet); otherwise "auto".
+            return coord.fan.requested(self._head_id)
         if commanded == FAN_AUTO:
             return FAN_AUTO
-        coord = self.coordinator
         # Our boost ladder's choice, not a person's. _write_fan records the new
         # token in _fan_cmd BEFORE the head applies it, so for the moment the
         # head is still on the prior ladder token (_fan_prev) -- a render in
@@ -329,7 +333,13 @@ class MXZRoomClimate(MXZEntity, CoordinatorEntity[MXZCoordinator], ClimateEntity
         from stage GENTLE while the firmware runs its own `auto`) and the user
         selects that same "low", this issues set_fan_mode low on the head — a
         genuine manual hold at low, exactly as intended (the coordinator's latch
-        picks it up as a deliberate departure from `auto`)."""
+        picks it up as a deliberate departure from `auto`).
+
+        Rooms on a per-room fan policy: ``auto`` releases to the policy and a
+        named speed is an indefinite hold (fan_control.async_service_fan)."""
+        if self.coordinator.fan.managed(self._head_id):
+            await self.coordinator.fan.async_service_fan(self._head_id, fan_mode)
+            return
         await self.coordinator.async_head_call(
             "set_fan_mode",
             {"entity_id": self._head_id, "fan_mode": fan_mode},

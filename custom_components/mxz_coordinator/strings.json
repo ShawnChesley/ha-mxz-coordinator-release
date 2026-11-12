@@ -323,6 +323,12 @@
       "zone_cool_exempt": {
         "name": "{zone} cool exempt"
       },
+      "zone_tight_demand": {
+        "name": "{zone} tight demand"
+      },
+      "zone_cool_block": {
+        "name": "{zone} cool block"
+      },
       "zone_emergency_protect": {
         "name": "{zone} emergency protect"
       },
@@ -341,6 +347,14 @@
           "heat": "Heat only",
           "cool": "Cool only"
         }
+      },
+      "zone_fan_policy": {
+        "name": "{zone} fan policy",
+        "state": {
+          "legacy": "Legacy boost",
+          "native_auto": "Native Auto",
+          "adaptive": "Adaptive"
+        }
       }
     },
     "sensor": {
@@ -351,6 +365,11 @@
     "climate": {
       "zone_thermostat": {
         "name": "{zone} thermostat"
+      }
+    },
+    "button": {
+      "zone_fan_release": {
+        "name": "{zone} fan release"
       }
     }
   }

@@ -19,7 +19,7 @@ import logging
 import math
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -36,6 +36,7 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.helpers.start import async_at_start
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.temperature import display_temp
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import TemperatureConverter
@@ -130,6 +131,7 @@ from .const import (
     unit_profile,
     zone_slug,
 )
+from .fan_control import FanController
 from .logic import (
     EMERGENCY_CLEARED,
     EMERGENCY_ENTER,
@@ -145,6 +147,7 @@ from .logic import (
     engage_with_latch,
     fan_for_delta,
     head_action,
+    head_setpoint_target,
     room_call,
     season_lockouts,
     setpoints,
@@ -157,6 +160,7 @@ from .remote_input import (
     obs_from_state,
     relevant_change,
 )
+from .target_input import TARGET_SETTLE_S, TargetInput
 from .window_pause import (
     EVENT_PAUSED,
     EVENT_RESUMED,
@@ -169,6 +173,15 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _round_half_away(value: float) -> float:
+    """Round to the nearest integer, ties away from zero (never banker's rounding).
+
+    Python's ``round`` sends .5 ties to the even neighbour, so a head displaying
+    70.5 F would be read as 70 and 73.5 F as 74 depending only on parity.
+    """
+    return math.copysign(math.floor(abs(value) + 0.5), value)
 
 
 def _read_temp(state: Any, fallback: float) -> tuple[bool, float]:
@@ -214,6 +227,15 @@ class Zone:
     # is on; emergency_protect/emergency_floor — force heat below the floor
     # (overrides heat lockout, eco, standoff priority and hysteresis).
     cool_exempt: bool = False
+    # Local fork: tight demand — this room votes on the SHARED mode at its own
+    # drift instead of max(global demand_threshold, drift). Lets a priority
+    # room (e.g. a bedroom held at a narrow band overnight) claim the shared
+    # compressor at target +/- drift. Default OFF = unchanged behaviour.
+    tight_demand: bool = False
+    # Local fork: cool block — while on, this room never makes a comfort cool
+    # call (demand or engage). Driven by automations such as the woodstove
+    # lockout. Independent of the seasonal cool lockout. Default OFF.
+    cool_block: bool = False
     emergency_protect: bool = False
     emergency_floor: float = 60.0
     # Local fork: window/door pause. ``contacts`` are this room's binary_sensors
@@ -231,6 +253,18 @@ class Zone:
     input_kind: str | None = None
     input_generation: int = 0
     input_at: str | None = None
+
+
+@dataclass(frozen=True)
+class _HeadEdges:
+    """Setpoint edges for one head after clamping and firmware gap adjustment."""
+
+    low: float
+    high: float
+    active: float
+    ranged: bool
+    moved: bool
+    min_gap: float
 
 
 INPUT_SOURCE_SERVICE = "service"
@@ -315,6 +349,34 @@ def _parse_zones(conf: dict[str, Any], target_default: float) -> list[Zone]:
 # ---------------------------------------------------------------------------
 # Coordinator
 # ---------------------------------------------------------------------------
+
+def _flip_reason(
+    *,
+    state: str,
+    current: str,
+    demands: list[str],
+    engaged: list[str],
+    emergency: bool,
+    hold_expired: bool,
+) -> str | None:
+    """Why a computed shared mode differs from the current one (None = no flip).
+
+    ``call``: some room is past the demand threshold. ``idle_follow``: nobody
+    is calling and the idle unit follows a room engaged in the other mode
+    (3.5.1). ``rest``: nobody is engaged either; the resting bias applied.
+    """
+    if state == current:
+        return None
+    if emergency:
+        return "emergency"
+    if hold_expired:
+        return "priority_hold_expired"
+    if MODE_COOL in demands or MODE_HEAT in demands:
+        return "call"
+    if state in engaged and current not in engaged:
+        return "idle_follow"
+    return "rest"
+
 class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Owns the decision state, drives the heads, and self-heals drift."""
 
@@ -347,6 +409,9 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # Ordered zone list (index 0 = highest standoff priority). Each zone
         # carries its head/sensor/vane ids plus the entity-owned target/enable.
         self.zones: list[Zone] = _parse_zones(conf, self.target_default)
+        # Per-room fan policy/holds (local fork). Every room starts "legacy":
+        # the boost ladder and latch below stay in charge until a policy is set.
+        self.fan = FanController(hass, self, entry.entry_id)
         self.notify_service: str | None = conf.get(CONF_NOTIFY_SERVICE) or None
 
         # Unit-dependent tunables fall back to the system-unit profile default;
@@ -468,6 +533,8 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # lazily from the head's own mode on the first compute so an in-flight
         # run resumes across restarts.
         self._engage_latch: dict[str, str] = {}
+        # 3.5.1: reason for the last shared-mode flip (plan visibility).
+        self._last_flip_reason: str | None = None
         # Local fork (3.4.2): when the current priority hold began (epoch s), or
         # None. Bounded by PRIORITY_HOLD_MAX_S; not persisted, so a restart
         # grants at most one more full window.
@@ -522,6 +589,9 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cmd_contexts: dict[str, float] = {}
         self._cmd_context_order: deque[str] = deque()
         self._last_head_cmd: dict[str, tuple[float, str | None, str | None]] = {}
+        self._target_input: dict[str, TargetInput] = {}
+        self._target_timers: dict[str, Any] = {}
+        self._intended_active: dict[str, tuple[str, float]] = {}
         # Last externally observed remote temperature per head, per remote mode.
         self._remote: dict[str, RemoteRecord] = {}
         self._remote_store: Store = Store(
@@ -547,6 +617,7 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._remote[climate_id] = RemoteRecord.from_dict(rec)
         await self._async_load_emergency()
         await self._async_load_window()
+        await self.fan.async_load()
         self._unsubs.append(
             async_track_state_change_event(
                 self.hass,
@@ -615,6 +686,11 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         for cancel in self._dry_timers.values():
             cancel()
         self._dry_timers.clear()
+        for cancel in self._target_timers.values():
+            cancel()
+        self._target_timers.clear()
+        self._target_input.clear()
+        self._intended_active.clear()
         if self._remote:
             await self._remote_store.async_save(
                 {"heads": {k: v.as_dict() for k, v in self._remote.items()}}
@@ -626,6 +702,7 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._window_timer = None
         if self._window_loaded:
             await self._window_store.async_save({"zones": dict(self._window)})
+        await self.fan.async_shutdown()
 
     # -- window/door pause (local fork; persisted) ---------------------------
     async def _async_load_window(self) -> None:
@@ -956,6 +1033,7 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 **common,
                 "cool_lockout": common["cool_lockout"] and not zone.cool_exempt,
                 "direction": zone.direction,
+                "cool_block": zone.cool_block,
             }
             # Early stop for exempt cooling — only while the lockout is on.
             stop_offset = (
@@ -984,7 +1062,12 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # told to tolerate a wide band must not steer the shared
                 # compressor inside it. max() reproduces today's behavior
                 # exactly whenever drift <= demand_threshold (the default).
-                sensor_ok=ok, band=max(self.demand_threshold, zdrift),
+                sensor_ok=ok,
+                band=(
+                    zdrift
+                    if zone.tight_demand
+                    else max(self.demand_threshold, zdrift)
+                ),
                 neutral=DEMAND_NEUTRAL,
                 **zcommon,
             )
@@ -1020,6 +1103,7 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             plan[f"{zone.slug}_demand"] = demand
             plan[f"{zone.slug}_engage"] = engage
             plan[f"{zone.slug}_temp"] = temp
+            plan[f"{zone.slug}_temp_ok"] = ok
             plan[f"{zone.slug}_emergency"] = in_emergency
             plan[f"{zone.slug}_window"] = self.zone_window_label(zone)
 
@@ -1101,6 +1185,8 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                         "drift": self.zone_drift(zone),
                         "fan_hold": self._fan_latched.get(zone.climate_id, False),
                         "cool_exempt": zone.cool_exempt,
+                        "tight_demand": zone.tight_demand,
+                        "cool_block": zone.cool_block,
                         "cool_stop_offset": stop_offsets[i],
                         "emergency_protect": zone.emergency_protect,
                         "emergency_floor": zone.emergency_floor,
@@ -1129,6 +1215,17 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     else None
                 ),
                 "priority_hold_expired": hold_expired,
+                # 3.5.1: why this compute flips the shared mode (None = no
+                # flip), and the reason recorded for the last flip applied.
+                "flip_reason": _flip_reason(
+                    state=state,
+                    current=current,
+                    demands=demands,
+                    engaged=hold_engages,
+                    emergency=any(emergencies),
+                    hold_expired=hold_expired,
+                ),
+                "last_flip_reason": self._last_flip_reason,
                 "sensors_ok": all_ok,
                 "seconds_since_mode_change": int(elapsed),
                 "mode_change_allowed": allowed,
@@ -1146,7 +1243,22 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # observed fan_mode), so re-stamp fan_hold from the post-apply state —
         # otherwise the plan's diagnostic would lag the latch by a cycle.
         for zone_view, zone in zip(plan.get("zones", ()), self.zones):
-            zone_view["fan_hold"] = self._fan_latched.get(zone.climate_id, False)
+            if self.fan.managed(zone.climate_id):
+                zone_view["fan_hold"] = self.fan.held(zone.climate_id)
+            else:
+                zone_view["fan_hold"] = self._fan_latched.get(zone.climate_id, False)
+            zone_view.update(self.fan.diagnostics(zone.climate_id))
+            # Compute the canonical target's representation even at startup
+            # when an idempotent apply has not issued a command yet.
+            zone_view["target_equivalents"] = {
+                "target": zone.target,
+                "equivalents": list(self._target_equivalents(zone.climate_id, zone.target)),
+            }
+            journal = self._target_input.get(zone.climate_id)
+            zone_view["target_commands"] = {
+                mode: {"target": values[0], "equivalents": list(values[1:])}
+                for mode, values in (journal.commanded.items() if journal else ())
+            }
         return plan
 
     # -- actuator (mirrors script.mxz_coordinate) ---------------------------
@@ -1181,6 +1293,10 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if zone.climate_id in self._vane_kicks:
                 continue  # mid vane-kick: leave the head alone until it finishes
             emergency = bool(plan.get(f"{zone.slug}_emergency"))
+            if emergency or self.zone_window_paused(zone):
+                # Use the NEW plan, not self.data (which still holds the prior
+                # plan until this update finishes). Protection cannot wait.
+                self._cancel_target_candidate(zone.climate_id)
             # Emergency heat overrides eco for its own zone: real heat at the
             # emergency target, not the eco protection edges.
             zone_eco = self._eco_active() and not emergency
@@ -1193,9 +1309,19 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 eco=zone_eco,
                 idle=self._idle_act_for(zone.climate_id),
             )
+            # Tight-demand rooms cool the head to one step BELOW the room
+            # target. With the head aimed exactly at target it eases off just
+            # above it (63.2-63.6 F for a 63 F target on the FH09, 2026-11-10),
+            # so the room never reaches the release point and the shared
+            # compressor stays in cool for hours. The vote/release logic still
+            # uses the real target; only the head's setpoint moves.
+            sp_target = head_setpoint_target(
+                target=ztarget, mode=state, tight_demand=zone.tight_demand,
+                eco=zone_eco, emergency=emergency, celsius=self.celsius,
+            )
             low, high = setpoints(
                 mode=state,
-                target=ztarget,
+                target=sp_target,
                 eco=zone_eco,
                 clamp_min=self.clamp_min,
                 clamp_max=self.clamp_max,
@@ -1232,8 +1358,14 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     and cur is not None
                     and cur.state not in (MODE_OFF, *UNAVAILABLE_STATES)
                 )
+                managed = self.fan.managed(zone.climate_id)
                 if handback:
-                    await self._apply_fan(zone.climate_id, MODE_FAN_ONLY, delta)
+                    if managed:
+                        await self.fan.apply(
+                            zone, act, plan, eco=zone_eco, handback=True, target=ztarget
+                        )
+                    else:
+                        await self._apply_fan(zone.climate_id, MODE_FAN_ONLY, delta)
                 await self._apply_head(zone.climate_id, act, low, high)
                 # No fan writes while held (the `eco` hold reaches here): the
                 # fan-boost/latch machinery stays frozen so standby residue
@@ -1241,6 +1373,11 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # via _reseed_fan_after_standby on the release edge.
                 if handback:
                     self._fan_idx.pop(zone.climate_id, None)
+                elif managed:
+                    # Protections (standby hold included) are judged inside.
+                    await self.fan.apply(
+                        zone, act, plan, eco=zone_eco, handback=False, target=ztarget
+                    )
                 elif not self.inhibited:
                     await self._apply_fan(zone.climate_id, act, delta)
             except HomeAssistantError as err:
@@ -1253,6 +1390,14 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         # Stamp the flip only on a real mode change (cool<->heat).
         if state != self.current_shared_mode:
+            reason = plan.get("flip_reason")
+            _LOGGER.info(
+                "MXZ: shared mode %s -> %s (%s)",
+                self.current_shared_mode,
+                state,
+                reason or "external",
+            )
+            self._last_flip_reason = reason
             self.current_shared_mode = state
             self._last_mode_change_ts = dt_util.utcnow().timestamp()
             self.async_update_listeners()  # let the shared-mode select re-render
@@ -1488,58 +1633,86 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Issue (or skip, if already correct) the command for one head."""
         state = self.hass.states.get(climate_id)
         cur_mode = state.state if state else None
+        edges = (
+            self._effective_edges(climate_id, act, low, high, state)
+            if act in (MODE_COOL, MODE_HEAT)
+            else None
+        )
 
-        if act in (MODE_COOL, MODE_HEAT):
-            # Clamp each edge to what THIS head will actually accept. The global
-            # clamp_min/clamp_max can exceed an individual head's operating band,
-            # and HA validates set_temperature by converting our (system-unit)
-            # value into the head's NATIVE unit and range-checking there — so a
-            # °C-native head whose native max is 26.0 °C rejects 79 °F (26.11 °C)
-            # even though it REPORTS max_temp = 79 °F (78.8 rounded up). Clamping
-            # in the head's native band (rounded toward the safe interior) keeps
-            # a head-exceeding target from erroring every cycle / degrading the
-            # zone (#10) — it lands on the head's real ceiling/floor instead.
-            low, high = self._clamp_to_head_band(climate_id, low, high)
-            tol = self.target_step / 2  # half a step = already-set (float noise)
-            features = (
-                int(state.attributes.get("supported_features") or 0) if state else 0
+        if edges is not None:
+            # Remember the setpoint we intend this head to hold this cycle (our
+            # own computation, never a report) for the settle check.
+            self._intended_active[climate_id] = (act, edges.active)
+
+        # Do not erase a potential remote temperature press before its settle
+        # timer can judge it. This defers only ordinary setpoint rewrites in the
+        # SAME mode. Pauses, Off, mode changes and protection always take priority.
+        journal = self._target_input.get(climate_id)
+        candidate = journal.candidate if journal else None
+        zone = self.zone_for_head(climate_id)
+        if candidate is not None and zone is not None:
+            can_wait = (
+                edges is not None
+                and act == cur_mode == candidate.mode
+                and zone.enable and self.coordinator_enable
+                and not self.inhibited and not self._eco_active()
+                and not self.zone_window_paused(zone)
+                and not (self.data or {}).get(f"{zone.slug}_emergency")
+                and candidate.generation == zone.input_generation
             )
-            # ClimateEntityFeature.TARGET_TEMPERATURE_RANGE == 2. Heads without
-            # it (single-setpoint — common on MXZ indoor units) reject
-            # target_temp_low/high, so send the one setpoint they accept (#6):
-            # the clamped room target (= high edge in cool, low edge in heat).
-            if not features & 2:
-                setpoint = high if act == MODE_COOL else low
+            if not can_wait:
+                self._cancel_target_candidate(climate_id)
+            else:
+                # Bring the expectation up to the setpoint we would command now
+                # (after clamp and gap adjustment, with current metadata). This
+                # keeps the candidate: if it is merely our own setpoint's
+                # representation it is an echo; otherwise a genuine press settles.
+                self._reconcile_target_expectation(climate_id, act, edges.active)
+                if not journal.matches(act, candidate.value):
+                    return
+                self._cancel_target_candidate(climate_id)
+
+        if edges is not None:
+            low, high = edges.low, edges.high
+            tol = self.target_step / 2  # half a step = already-set (float noise)
+            if not edges.ranged:
+                # Single-setpoint heads (no TARGET_TEMPERATURE_RANGE) reject
+                # target_temp_low/high, so send the one setpoint they accept (#6):
+                # the clamped room target (= high edge in cool, low edge in heat).
                 cur = _as_float(state.attributes.get("temperature")) if state else None
-                if cur_mode == act and cur is not None and abs(cur - setpoint) < tol:
+                if edges.min_gap > 0:
+                    # Two-setpoint head driven by a single setpoint (floor/ceiling
+                    # case): the firmware places the other edge itself, a gap
+                    # away and rounded its own way. Expect it as ours, never as
+                    # a remote press. Re-registered each cycle, exactly like the
+                    # range path's idempotent branch; ``expect`` keeps candidates.
+                    self._expect_firmware_edge(
+                        climate_id, act, edges.low if act == MODE_COOL else edges.high
+                    )
+                if cur_mode == act and cur is not None and abs(cur - edges.active) < tol:
+                    self._reconcile_target_expectation(climate_id, act, edges.active)
                     return  # idempotent
+                if edges.min_gap > 0:
+                    _LOGGER.debug(
+                        "MXZ: %s %s %.1f sent as a single setpoint (gap %.1f does "
+                        "not fit the head band %s); firmware places the other edge",
+                        climate_id, act, edges.active, edges.min_gap,
+                        self._head_safe_band(climate_id),
+                    )
                 await self.async_head_call(
                     "set_temperature",
                     {
                         "entity_id": climate_id,
                         "hvac_mode": act,
-                        "temperature": setpoint,
+                        "temperature": edges.active,
                     },
                 )
                 return
-            # Mahtanar mitsubishi_itp firmware (v2.0.1) forces cool - heat >= 2.0 C
-            # and otherwise moves an edge itself (sometimes the ACTIVE one), which
-            # then alternates with our rewrite. Widen only the unused edge.
-            min_gap = 2.0 if self.celsius else 3.6
-            gstep = self.target_step or 1.0
-            min_gap = math.ceil(min_gap / gstep - 1e-9) * gstep
-            low, high, moved = widen_unused_edge(
-                mode=act,
-                low=low,
-                high=high,
-                min_gap=min_gap,
-                band=self._head_safe_band(climate_id),
-            )
-            if moved:
+            if edges.moved:
                 _LOGGER.warning(
                     "MXZ: %s band too tight for a %.1f gap; active %s edge moved (%s/%s)",
                     climate_id,
-                    min_gap,
+                    edges.min_gap,
                     act,
                     low,
                     high,
@@ -1555,6 +1728,8 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 and abs(cur_low - low) < tol
                 and abs(cur_high - high) < tol
             ):
+                self._reconcile_target_expectation(climate_id, act, edges.active)
+                self._expect_unused_edge(climate_id, act, low, high)
                 return  # idempotent
             await self.async_head_call(
                 "set_temperature",
@@ -1574,6 +1749,148 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "set_hvac_mode",
             {"entity_id": climate_id, "hvac_mode": act},
         )
+
+    def _effective_edges(
+        self, climate_id: str, act: str, low: float, high: float, state: Any
+    ) -> _HeadEdges:
+        """The (low, high) edges and active setpoint we would command a head.
+
+        Clamp each edge to what THIS head will actually accept. The global
+        clamp_min/clamp_max can exceed an individual head's operating band, and
+        HA validates set_temperature by converting our (system-unit) value into
+        the head's NATIVE unit and range-checking there -- so a C-native head
+        whose native max is 26.0 C rejects 79 F (26.11 C) even though it REPORTS
+        max_temp = 79 F (78.8 rounded up). Clamping in the head's native band
+        (rounded toward the safe interior) keeps a head-exceeding target from
+        erroring every cycle / degrading the zone (#10).
+
+        Mahtanar mitsubishi_itp firmware (v2.0.1) forces cool - heat >= 2.0 C and
+        otherwise moves an edge itself (sometimes the ACTIVE one). Widen only the
+        unused edge; if the head band is too tight, the active edge moves too
+        (e.g. a 64 F cool target on a head whose floor is 61 F commands 61/65).
+        ``active`` is therefore the setpoint the head is really asked to hold.
+        """
+        low, high = self._clamp_to_head_band(climate_id, low, high)
+        features = int(state.attributes.get("supported_features") or 0) if state else 0
+        # ClimateEntityFeature.TARGET_TEMPERATURE_RANGE == 2.
+        if not features & 2:
+            return _HeadEdges(
+                low=low, high=high, active=high if act == MODE_COOL else low,
+                ranged=False, moved=False, min_gap=0.0,
+            )
+        fw_gap = 2.0 if self.celsius else 3.6  # the firmware's own minimum
+        gstep = self.target_step or 1.0
+        min_gap = math.ceil(fw_gap / gstep - 1e-9) * gstep
+        wanted = high if act == MODE_COOL else low
+        low, high, moved = widen_unused_edge(
+            mode=act,
+            low=low,
+            high=high,
+            min_gap=min_gap,
+            band=self._head_safe_band(climate_id),
+        )
+        if moved and features & 1:
+            # The gap could only be met by moving the ACTIVE edge (e.g. cool 63
+            # under a 61 F floor -> 61/65), because HA range-checks both edges
+            # and rejects an unused edge below the head's floor. A head that
+            # also accepts a single setpoint (TARGET_TEMPERATURE == 1) takes
+            # just the active value; the Mahtanar firmware then places the
+            # unused edge itself, below the floor if it must (measured on the
+            # FH09: cool 63 -> 59.5/63). The room gets the target it asked for.
+            return _HeadEdges(
+                low=wanted - fw_gap if act == MODE_COOL else wanted,
+                high=wanted if act == MODE_COOL else wanted + fw_gap,
+                active=wanted, ranged=False, moved=False, min_gap=min_gap,
+            )
+        return _HeadEdges(
+            low=low, high=high, active=high if act == MODE_COOL else low,
+            ranged=True, moved=moved, min_gap=min_gap,
+        )
+
+    def _refresh_target_equivalents(self, climate_id: str, journal: TargetInput, mode: str) -> None:
+        """Recompute the native/display equivalents of our commanded value for ``mode``."""
+        expected = journal.commanded.get(mode)
+        if not expected:
+            return
+        base = expected[0]
+        equivalents = self._target_equivalents(climate_id, base)
+        if equivalents and tuple(equivalents) != tuple(expected[1:]):
+            journal.expect(mode, base, *equivalents)
+
+    @callback
+    def _reconcile_target_expectation(self, climate_id: str, mode: str, value: float) -> None:
+        """Refresh the target expectation when a write is skipped as already set.
+
+        A skipped write leaves the head at a setpoint WE chose, so the journal
+        should expect that value (and its native/display equivalent) rather than
+        whatever an earlier write recorded -- e.g. a startup write made before
+        the head's metadata was available. Only our own computed setpoint is
+        recorded, never a reported value, and a pending remote candidate is left
+        untouched (genuine remote input still settles or cancels on its own).
+        """
+        journal = self._target_input.setdefault(climate_id, TargetInput())
+        journal.expect(mode, float(value), *self._target_equivalents(climate_id, float(value)))
+
+    @callback
+    def _expect_unused_edge(
+        self, climate_id: str, mode: str, low: float, high: float
+    ) -> None:
+        """Expect the edge a range write sets for the OTHER mode as ours too.
+
+        Two-setpoint heads store both edges and report the one for their
+        current mode. Holding Heat 72 we command 72/76; after a mode change made
+        without a new temperature (HA UI, script) the head reports ``cool 76``.
+        That value is our own command, not a remote press, so it must neither
+        become the room target nor the remembered IR temperature. Uses
+        :meth:`TargetInput.expect`, so a pending candidate is never erased.
+        """
+        if mode == MODE_HEAT:
+            other, value = MODE_COOL, float(high)
+        elif mode == MODE_COOL:
+            other, value = MODE_HEAT, float(low)
+        else:
+            return
+        journal = self._target_input.setdefault(climate_id, TargetInput())
+        journal.expect(other, value, *self._target_equivalents(climate_id, value))
+
+    @callback
+    def _expect_firmware_edge(self, climate_id: str, mode: str, value: float) -> None:
+        """Expect the unused edge the FIRMWARE placed after a single-setpoint write.
+
+        We never commanded this edge, so we can't know its exact reported value:
+        the firmware works in native 0.5 C steps and HA rounds the display. Expect
+        the plain value and its nearby half-degree representations (one half-step
+        either way) plus the native/display equivalents -- keeping only values
+        strictly beyond the head's floor (heat edge) or ceiling (cool edge), where
+        a remote press can't land, so the tolerance cannot mask a genuine input.
+        """
+        if mode == MODE_HEAT:
+            other = MODE_COOL
+        elif mode == MODE_COOL:
+            other = MODE_HEAT
+        else:
+            return
+        v = float(value)
+        band = self._head_safe_band(climate_id)
+
+        def _outside(x: float) -> bool:
+            # Enforced, not assumed: no expected value may sit where a remote
+            # press could land (inside the head's band), whatever the rounding.
+            if band is None:
+                return True
+            return x < band[0] - 1e-6 if other == MODE_HEAT else x > band[1] + 1e-6
+
+        values: list[float] = []
+        for c in (v, math.floor(v * 2) / 2, math.ceil(v * 2) / 2, round(v * 2) / 2):
+            for x in (c, *self._target_equivalents(climate_id, c)):
+                if _outside(x) and not any(
+                    math.isclose(x, y, abs_tol=1e-6) for y in values
+                ):
+                    values.append(x)
+        if not values:
+            return
+        journal = self._target_input.setdefault(climate_id, TargetInput())
+        journal.expect(other, values[0], *values[1:])
 
     async def _apply_fan(self, climate_id: str, act: str, delta: float) -> None:
         """Drive the head's fan speed from ``delta`` (°F off-target). Idempotent.
@@ -1794,6 +2111,8 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         source of truth while running; across restarts the switch restores the
         held/not-held bool and hands it back via ``restore_fan_hold``.
         """
+        if self.fan.managed(climate_id):
+            return not self.fan.held(climate_id)
         return not self._fan_latched.get(climate_id, False)
 
     async def async_set_fan_auto(self, climate_id: str, on: bool) -> None:
@@ -1814,7 +2133,16 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         With fan boost disabled the fan machinery is inert: OFF still records the
         latch (it simply has no effect until boost is re-enabled), and ON still
         clears it — the switch stays honest either way.
+
+        Rooms on a per-room fan policy (fan_control): ON = Release to the
+        policy, OFF = hold the head's current selected speed.
         """
+        if self.fan.managed(climate_id):
+            if on:
+                await self.fan.async_release(climate_id)
+            else:
+                await self.fan.async_hold_current(climate_id)
+            return
         state = self.hass.states.get(climate_id)
         observed = state.attributes.get("fan_mode") if state is not None else None
         if on:
@@ -1966,6 +2294,11 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @callback
     def _on_input_change(self, event: Event) -> None:
         """A temp sensor changed -> recompute."""
+        for zone in self.zones:
+            if zone.sensor_id == event.data.get("entity_id") and not _read_temp(
+                event.data.get("new_state"), zone.target
+            )[0]:
+                self._cancel_target_candidate(zone.climate_id)
         self.hass.async_create_task(self.async_request_refresh())
 
     @callback
@@ -2004,6 +2337,10 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.exception(
                 "MXZ: remote-input classification failed for %s", entity_id
             )
+        try:
+            self.fan.observe(entity_id, old_state, new_state)
+        except Exception:
+            _LOGGER.exception("MXZ: fan input classification failed for %s", entity_id)
         if self._input_generation_sum() != adopted_gen:
             # A person's input was adopted: let the plan take over now rather
             # than at whatever refresh happens next.
@@ -2135,6 +2472,40 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         a person at the remote — and is classified in ``_on_head_change``.
         """
         climate_id = data["entity_id"]
+        prior = self._target_input.get(climate_id)
+        prior_revisions = dict(prior.revisions) if prior is not None else {}
+        # The target expectation is independent of fan/mode echo timestamps.
+        # Stamp BEFORE dispatch because a synchronous head can report inline.
+        state = self.hass.states.get(climate_id)
+        target_mode = data.get("hvac_mode", state.state if state else None)
+        target = data.get("temperature")
+        if target is None:
+            target = data.get(
+                "target_temp_low" if target_mode == MODE_HEAT else "target_temp_high"
+            )
+        target_touched = "hvac_mode" in data or target is not None
+        if target_mode in (MODE_HEAT, MODE_COOL) and target is not None:
+            self._cancel_target_candidate(climate_id)
+            self._target_input.setdefault(climate_id, TargetInput()).command(
+                target_mode, float(target),
+                *self._target_equivalents(climate_id, float(target)),
+            )
+            if "target_temp_low" in data and "target_temp_high" in data:
+                self._expect_unused_edge(
+                    climate_id, target_mode,
+                    data["target_temp_low"], data["target_temp_high"],
+                )
+        elif "hvac_mode" in data:
+            self._cancel_target_candidate(climate_id)
+        # The expectations THIS call recorded (no await since the snapshot above, so
+        # every revision change is ours) — rolled back per mode if the write fails.
+        current = self._target_input.get(climate_id)
+        our_revisions = {
+            m: r for m, r in (current.revisions.items() if current is not None else ())
+            if prior_revisions.get(m) != r
+        }
+        for rev in our_revisions.values():
+            current.hold(rev)
         now = time.monotonic()
         ctx = Context()
         self._cmd_contexts[ctx.id] = now
@@ -2152,9 +2523,169 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             mode = mode if mode is not None else prev[1]
             fan = fan if fan is not None else prev[2]
         self._last_head_cmd[climate_id] = (now, mode, fan)
-        await self.hass.services.async_call(
-            "climate", service, data, blocking=True, context=ctx
-        )
+        try:
+            await self.hass.services.async_call(
+                "climate", service, data, blocking=True, context=ctx
+            )
+        except HomeAssistantError:
+            # A rejected write must not create a permanent echo expectation — but it
+            # must not erase a NEWER write's expectation either (a write that started
+            # after this one and succeeded while this one was still in flight).
+            ti = self._target_input.get(climate_id)
+            if target_touched and ti is not None:
+                rolled = [m for m, r in our_revisions.items() if ti.rollback(m, r)]
+                if rolled:
+                    self._cancel_target_candidate(climate_id)
+                if prior is None and not ti.commanded and ti.candidate is None:
+                    self._target_input.pop(climate_id, None)
+            raise
+        if (ti := self._target_input.get(climate_id)) is not None:
+            for rev in our_revisions.values():
+                ti.settle(rev)
+
+    def _target_equivalents(self, climate_id: str, target: float) -> tuple[float, ...]:
+        """The known native-step/display representation of our target, not a band.
+
+        E.g. 72 F -> 22.22 C -> native 22.0 C -> HA display 71.5 F. Never learn
+        aliases from arbitrary reports (which could be real remote presses).
+        """
+        native = self._native_metadata(climate_id)
+        if native is None:
+            return ()
+        unit, step, precision = native
+        try:
+            value = TemperatureConverter.convert(target, self.temp_unit, unit)
+            value = _round_half_away(value / step) * step
+            displayed = display_temp(self.hass, value, unit, precision)
+            return (float(displayed),) if displayed is not None else ()
+        except (TypeError, ValueError, HomeAssistantError):
+            return ()
+
+    def _native_metadata(self, climate_id: str) -> tuple[str, float, float] | None:
+        """A head's native (unit, target step, display precision), if usable."""
+        component = (self.hass.data.get(DATA_INSTANCES) or {}).get("climate")
+        entity = component.get_entity(climate_id) if component else None
+        if entity is None:
+            return None
+        try:
+            unit = entity.temperature_unit
+            step = float(entity.target_temperature_step)
+            precision = entity.precision
+        except (TypeError, ValueError, AttributeError):
+            return None
+        if not math.isfinite(step) or step <= 0:
+            return None
+        return unit, step, precision
+
+    def _adoptable_target(self, climate_id: str, reported: float) -> float:
+        """The room target a person meant by a head's reported (display) setpoint.
+
+        The head stores setpoints in its native step (0.5 C on Mahtanar) and HA
+        shows that converted and rounded to display precision, so a remote set to
+        71 F reads 70.5 and 73 F reads 73.5. Map the report back to the head's
+        native value first (70.5 F -> 21.5 C -> 70.7 F), then round to our target
+        step with ties away from zero, then clamp to the head's band. Without
+        usable metadata, fall back to rounding the report itself (ties away).
+        """
+        value = reported
+        native = self._native_metadata(climate_id)
+        if native is not None:
+            unit, step, _precision = native
+            try:
+                snapped = TemperatureConverter.convert(reported, self.temp_unit, unit)
+                snapped = _round_half_away(snapped / step) * step
+                value = TemperatureConverter.convert(snapped, unit, self.temp_unit)
+            except (TypeError, ValueError, HomeAssistantError):
+                value = reported
+        lo, hi = self.head_target_bounds(climate_id)
+        target_step = self.target_step or 1.0
+        return min(max(_round_half_away(value / target_step) * target_step, lo), hi)
+
+    @callback
+    def _cancel_target_candidate(self, climate_id: str) -> None:
+        if cancel := self._target_timers.pop(climate_id, None):
+            cancel()
+        if journal := self._target_input.get(climate_id):
+            journal.candidate = None
+
+    @callback
+    def _settle_target_candidate(self, climate_id: str, _now: Any) -> None:
+        self._target_timers.pop(climate_id, None)
+        journal = self._target_input.get(climate_id)
+        candidate = journal.candidate if journal else None
+        zone = self.zone_for_head(climate_id)
+        observed = obs_from_state(self.hass.states.get(climate_id))
+        if (
+            candidate is None or zone is None or observed is None
+            or observed.mode != candidate.mode or observed.temperature != candidate.value
+            or zone.input_generation != candidate.generation
+            or not zone.enable or self.zone_window_paused(zone)
+            or self.inhibited or self._eco_active()
+            or not _read_temp(self.hass.states.get(zone.sensor_id), zone.target)[0]
+            or (self.data or {}).get(f"{zone.slug}_emergency")
+        ):
+            self._cancel_target_candidate(climate_id)
+            return
+        # Metadata may have become available while the candidate was settling:
+        # if the value is now known to be our own command's representation, it
+        # is an echo, not a remote press.
+        self._refresh_target_equivalents(climate_id, journal, candidate.mode)
+        intended = self._intended_active.get(climate_id)
+        if intended is not None and intended[0] == candidate.mode:
+            # The setpoint our latest apply intended (after clamp and gap
+            # adjustment) is ours too; a report of it is not a remote press.
+            self._reconcile_target_expectation(climate_id, *intended)
+        if journal.matches(candidate.mode, candidate.value):
+            self._cancel_target_candidate(climate_id)
+            return
+        age = time.monotonic() - candidate.since
+        if age < TARGET_SETTLE_S:
+            self._target_timers[climate_id] = async_call_later(
+                self.hass, TARGET_SETTLE_S - age,
+                partial(self._settle_target_candidate, climate_id),
+            )
+            return
+        self._cancel_target_candidate(climate_id)
+        target = self._adoptable_target(climate_id, candidate.value)
+        self.remote_record(climate_id).set(candidate.mode, candidate.value)
+        self._save_remote()
+        if self.set_zone_input(zone, source=INPUT_SOURCE_HEAD_MANUAL, target=target):
+            self.hass.async_create_task(self.async_request_refresh())
+
+    @callback
+    def _observe_target(self, climate_id: str, zone: Zone, old: Any, new: Any) -> bool:
+        """Handle a tracked temperature field without masking concurrent inputs."""
+        journal = self._target_input.get(climate_id)
+        if journal is None or new.mode not in journal.commanded or new.temperature is None:
+            return False
+        # Equivalents recorded at command time can be missing (e.g. a write made
+        # at startup before the head's metadata was available). Recompute them
+        # from OUR commanded value, never from the report.
+        self._refresh_target_equivalents(climate_id, journal, new.mode)
+        if old.mode != new.mode:
+            self._cancel_target_candidate(climate_id)
+            if not journal.matches(new.mode, new.temperature):
+                # An explicit remote power/mode transition still follows the
+                # existing IR intent path. In particular a paused room must
+                # remember its new requested target while immediately parking
+                # the head again; that safety park cannot wait for persistence.
+                return False
+        if old.mode == new.mode and old.temperature == new.temperature:
+            # A fan-only report neither creates a temperature candidate nor
+            # touches the remembered IR temperature.
+            return True
+        outcome = journal.observe(new.mode, new.temperature, time.monotonic(), zone.input_generation)
+        if outcome in ("echo", "invalid"):
+            self._cancel_target_candidate(climate_id)
+        elif climate_id not in self._target_timers:
+            self._target_timers[climate_id] = async_call_later(
+                self.hass, TARGET_SETTLE_S,
+                partial(self._settle_target_candidate, climate_id),
+            )
+            # Re-plan promptly so the apply can reconcile our own expectation
+            # (current metadata, clamp and gap) before the candidate settles.
+            self.hass.async_create_task(self.async_request_refresh())
+        return True
 
     def _is_our_echo(self, climate_id: str, new_state: Any) -> bool:
         """Whether a head state change is the echo of one of our commands."""
@@ -2198,6 +2729,10 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         changed_target = False
         changed_enable = False
         changed_direction = False
+        if source != INPUT_SOURCE_HEAD_MANUAL and any(
+            value is not None for value in (target, enable, direction)
+        ):
+            self._cancel_target_candidate(zone.climate_id)
 
         def _write_target() -> None:
             nonlocal changed_target
@@ -2304,7 +2839,15 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         old = obs_from_state(old_state)
         new = obs_from_state(new_state)
         if old is None or new is None:
+            self._cancel_target_candidate(entity_id)
             return  # startup / reconnect / dropout: never a person
+        if old.mode != new.mode:
+            self._cancel_target_candidate(entity_id)
+        if self._observe_target(entity_id, zone, old, new):
+            # The target field has its OWN echo/candidate decision. Do not
+            # compare it with the stale remote record in the legacy classifier.
+            old = replace(old, temperature=None)
+            new = replace(new, temperature=None)
         if not relevant_change(old, new):
             return  # current_temperature, hvac_action, synthesized low/high
         if self._is_our_echo(entity_id, new_state):
@@ -2315,9 +2858,7 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._save_remote()
         target = None
         if intent.adopt_target is not None:
-            lo, hi = self.head_target_bounds(entity_id)
-            step = self.target_step or 1.0
-            target = min(max(round(intent.adopt_target / step) * step, lo), hi)
+            target = self._adoptable_target(entity_id, intent.adopt_target)
         enable: bool | None = None
         if intent.manual_off:
             enable = False
@@ -2330,16 +2871,18 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             f"{new.mode}/{new.temperature}/{new.fan}",
             "; ".join(intent.notes) or "no intent",
         )
-        if target is None and enable is None:
-            return
-        # Local fork: a person's remote temperature or ON means "hold this
-        # number", whichever way that takes -- it reopens BOTH directions so a
-        # room an upstream controller had set to cool-only can still be heated
-        # from the remote (and vice versa). Remote mode is still never adopted
-        # as the shared mode; arbitration stays with the coordinator.
+        # Powering on in an allowed mode keeps the room's restriction. Only
+        # an explicit transition outside that restriction reopens both modes.
         direction = (
-            DIRECTION_AUTO if (target is not None or enable is True) else None
+            DIRECTION_AUTO
+            if old.mode != new.mode
+            and zone.direction != DIRECTION_AUTO
+            and new.mode in (MODE_HEAT, MODE_COOL, "auto", DIRECTION_AUTO)
+            and new.mode != zone.direction
+            else None
         )
+        if target is None and enable is None and direction is None:
+            return
         if self.set_zone_input(
             zone,
             source=INPUT_SOURCE_HEAD_MANUAL,

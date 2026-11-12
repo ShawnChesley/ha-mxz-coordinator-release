@@ -39,6 +39,7 @@ def room_call(
     cool_lockout: bool = False,
     cool_lockout_ceiling: float = 200.0,
     direction: str = DIRECTION_AUTO,
+    cool_block: bool = False,
 ) -> str:
     """Per-room call for one band (demand uses S/'neutral', engage uses D/'satisfied').
 
@@ -56,6 +57,11 @@ def room_call(
     ``cool_lockout`` is the mirror for the cold season: it holds off the cool call
     (let the room drift down on its own) UNLESS it rises above ``cool_lockout_ceiling``.
     The eco extremes are unaffected; the two lockouts are independent.
+
+    ``cool_block`` (local fork) is a per-room hard stop on comfort cooling —
+    e.g. while a woodstove is burning. Unlike ``cool_lockout`` it has no
+    ceiling and is not driven by the seasonal changeover. Eco protection
+    extremes still apply.
     """
     if not enabled:
         return MODE_OFF
@@ -68,7 +74,7 @@ def room_call(
     if not sensor_ok:
         return neutral
     if temp > target + band:
-        if direction == DIRECTION_HEAT:
+        if direction == DIRECTION_HEAT or cool_block:
             return neutral
         if cool_lockout and temp <= cool_lockout_ceiling:
             return neutral
@@ -278,6 +284,9 @@ def shared_mode(
     after it is back inside the demand threshold and no longer "calling". A
     higher-priority room's opposite demand still wins, and emergency heat still
     overrides everything. See :func:`priority_hold`.
+
+    With ``engaged`` given, an idle outdoor unit (no room calling) also follows
+    the rooms that want to run: see :func:`idle_mode`.
     """
     if emergency_heat:
         return MODE_HEAT
@@ -295,7 +304,7 @@ def shared_mode(
     elif any_heat:
         proposed = MODE_HEAT
     else:
-        proposed = rest
+        proposed = idle_mode(current=current, rest=rest, engaged=engaged)
 
     still = (current == MODE_COOL and any_cool) or (current == MODE_HEAT and any_heat)
     if proposed != current and allowed and (standoff or not still):
@@ -305,6 +314,30 @@ def shared_mode(
             return current
         return proposed
     return current
+
+
+def idle_mode(*, current: str, rest: str, engaged: list[str] | None) -> str:
+    """The mode an idle outdoor unit settles in when no room is calling.
+
+    Local fork (3.5.1). Rooms only *call* (and so flip the shared mode) once
+    they are ``demand_threshold`` off target, but they *engage* -- want to run
+    -- as soon as they pass their own drift. Resting at the last mode used to
+    leave the unit parked in a mode nobody was running while another room sat
+    engaged in the opposite mode, just short of the threshold: e.g. Master
+    satisfied at 64 F in cool while the Great Room waited at 66 F for heat.
+
+    Now, when no room is engaged in ``current`` and some room is engaged in the
+    other mode, the unit goes to that mode. A room running in ``current`` keeps
+    it (the priority hold), and with no room engaged either way the configured
+    resting bias applies exactly as before. The caller's hysteresis gate still
+    applies to the resulting flip.
+    """
+    if engaged is None or current in engaged:
+        return rest
+    wanted = next(
+        (e for e in engaged if e in (MODE_COOL, MODE_HEAT) and e != current), None
+    )
+    return wanted if wanted is not None else rest
 
 
 def priority_hold(
@@ -322,6 +355,22 @@ def priority_hold(
         (i for i, d in enumerate(demands) if d == proposed), len(demands)
     )
     return any(e == current for e in engaged[:first_opposite])
+
+
+def head_setpoint_target(
+    *, target: float, mode: str, tight_demand: bool, eco: bool, emergency: bool, celsius: bool
+) -> float:
+    """The target the head's setpoint is computed from (the room target is unchanged).
+
+    Tight-demand rooms cool the head one step BELOW the room target (1 F / 0.5 C):
+    aimed exactly at target the head eases off just above it and the room never
+    reaches its release point, so the shared compressor stays in cool. Only plain
+    cooling is biased — never heat, eco protection edges or emergency operation.
+    The demand vote and release always use the real room target.
+    """
+    if tight_demand and mode == MODE_COOL and not eco and not emergency:
+        return target - (0.5 if celsius else 1.0)
+    return target
 
 
 def setpoints(

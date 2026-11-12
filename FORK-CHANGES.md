@@ -1,6 +1,6 @@
 # Fork changes for review
 
-This candidate is not installed and is not yet a published HACS release.
+Released as 3.5.1 (tag v3.5.1) from ShawnChesley/ha-mxz-coordinator-release for HACS.
 
 * Room thermostats support off, heat, cool and the original single-target heat_cool.
   Direction constrains normal demand; it never gives a room authority to bypass
@@ -17,6 +17,25 @@ This candidate is not installed and is not yet a published HACS release.
 * IR temperature/ON input reopens heat_cool and is adopted as manual input. Stock
   CA's override confirmation and hold behavior are covered by compatibility tests.
 * Direction and freeze-protection helper registry entries are retained on reload.
+* Per-room "cool block" switch (default off): no comfort cooling for that room
+  while on; heat and eco protection unaffected; independent of the seasonal
+  cool lockout. Intended for automation (woodstove lockout).
+* Adaptive fan recovery thresholds lowered: Medium at 0.75 °F short (was 1.0),
+  High at 1.5 °F (was 3.0), new Very High stage at 2.5 °F; hysteresis and
+  dwell unchanged.
+* Per-room "tight demand" switch (default off). When on, the room votes on the
+  shared heat/cool mode at its own drift instead of max(demand_threshold, drift),
+  so a priority room can claim the shared compressor at target + drift rather than
+  waiting for the global threshold. Expect more changeovers while other rooms heat;
+  widening that room's drift trades band width for fewer changeovers.
+  While a tight room cools (not eco/emergency) its head is aimed one step below
+  the room target (1 °F / 0.5 °C) so it reaches the release point.
+* Cool target near a two-setpoint head's floor is sent as a single setpoint when
+  the firmware's minimum gap would otherwise raise it.
+* Adaptive fan error is converted to °F on Celsius installations.
+* A failed head write rolls back only its own target expectation (per-mode
+  revision), never a newer write's; if overlapping writes all fail, the
+  expectation returns to the last one that did not fail.
 
 Temperature semantics are unchanged: target 64 with drift 1 starts heat below 63
 and stops at 64. CA's floor is therefore a target, not an exact compressor start
