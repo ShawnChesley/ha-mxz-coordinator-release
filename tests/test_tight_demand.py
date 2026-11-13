@@ -107,7 +107,8 @@ async def test_tight_cool_aims_head_one_step_below_target(hass: HomeAssistant) -
     # finish and hand the compressor over. test_contended_finish.py covers the
     # uncontended one-step case.
     assert _cool_edge(hass, head_a) == 62  # room target 64
-    assert entry.runtime_data.data.get("primary_contended") is True
+    info = entry.runtime_data.data.get("primary_contended")
+    assert info and info["mode"] == "cool"
     # The vote/release still uses the real target: 64 releases cool.
     await _set_temp(hass, SENSOR_A, 64)
     entry.runtime_data._last_mode_change_ts = 0.0

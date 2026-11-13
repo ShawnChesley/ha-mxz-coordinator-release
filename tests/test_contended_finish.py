@@ -88,6 +88,8 @@ def test_contended_respects_existing_exclusions(mode, tight, eco, emergency):
         (0, "19:30", "19:30", False),        # equal bounds: disabled
         (0, "oops", "07:00", False),         # unparsable: disabled
         (0, "25:00", "07:00", False),
+        (20 * 60, "19:30:garbage", "07:00", False),  # bad seconds: disabled
+        (20 * 60, "19:30:99", "07:00", False),
     ],
 )
 def test_quiet_hours_windows(now, start, end, expected):
@@ -221,7 +223,8 @@ async def test_waiting_heat_demand_deepens_bias_and_latches(hass: HomeAssistant)
     await coord.async_refresh()
     await hass.async_block_till_done()
     assert coord.data["state"] == MODE_COOL  # priority hold: a finishes first
-    assert coord.data.get("primary_contended") is True
+    info = coord.data.get("primary_contended")
+    assert info and info["mode"] == MODE_COOL and info["waiters"] == ["secondary"]
     assert _cool_sp(heads[0]) == 61  # two-step bias
     # The waiter's demand flickers off: the latch holds while a is engaged.
     await _set_temp(hass, "sensor.room_b_temp", 70.0)
@@ -234,6 +237,87 @@ async def test_waiting_heat_demand_deepens_bias_and_latches(hass: HomeAssistant)
     await coord.async_refresh()
     await hass.async_block_till_done()
     assert "primary" not in coord._contended
+
+
+async def test_mode_change_clears_latch_even_if_room_reengages(hass: HomeAssistant):
+    """ChatGPT review: latched cool -> shared flips to heat with the SAME room
+    engaged in heat and nobody demanding cool -> the latch must not survive."""
+    _heads, coord = await _contended_setup(hass)
+    await _set_temp(hass, "sensor.room_b_temp", 60.0)
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+    assert "primary" in coord._contended
+    # Zone a goes cold too: everyone wants heat, the shared mode flips, and a
+    # re-engages in HEAT. The cool latch must clear (nobody waits for cool).
+    await _set_temp(hass, "sensor.room_a_temp", 58.0)
+    coord._last_mode_change_ts = 0.0
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+    assert coord.data["state"] == MODE_HEAT
+    assert coord.data[f"{coord.zones[0].slug}_engage"] == MODE_HEAT
+    assert not coord._contended
+    assert "primary_contended" not in coord.data
+
+
+async def test_zone_disable_mid_latch_clears(hass: HomeAssistant):
+    _heads, coord = await _contended_setup(hass)
+    await _set_temp(hass, "sensor.room_b_temp", 60.0)
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+    assert "primary" in coord._contended
+    coord.zones[0].enable = False
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+    assert not coord._contended
+    # Re-enable with the waiter still cold: contention re-latches cleanly.
+    coord.zones[0].enable = True
+    coord.reset_engage_latch(coord.zones[0].slug)
+    for _ in range(2):
+        await coord.async_refresh()
+        await hass.async_block_till_done()
+    if coord.data.get(f"{coord.zones[0].slug}_engage") == MODE_COOL:
+        assert "primary" in coord._contended
+
+
+async def test_emergency_heat_waiter_latches_contention(hass: HomeAssistant):
+    """An emergency-cold room is an opposing waiter like any other."""
+    heads, coord = await _contended_setup(hass)
+    coord.zones[1].emergency_protect = True
+    await _set_temp(hass, "sensor.room_b_temp", 45.0)
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+    if coord.data["state"] == MODE_COOL:
+        # Priority hold lets a finish first; it must be finishing HARD.
+        assert "primary" in coord._contended
+        assert _cool_sp(heads[0]) == 61
+    else:
+        # Emergency flipped the mode immediately: the cool latch must be gone.
+        assert not coord._contended
+
+
+async def test_contended_at_head_floor_never_sends_below_floor(hass: HomeAssistant):
+    """Target 61 on the 61 F-floor head, contended: bias wants 59, clamp holds 61."""
+    heads = [FloorRangeHead("a"), FloorRangeHead("b")]
+    entry = await _setup(hass, heads)
+    await _enable(hass, entry)
+    coord = entry.runtime_data
+    coord.zones[0].tight_demand = True
+    coord.zones[0].target = 61.0
+    coord.reset_engage_latch(coord.zones[0].slug)
+    await _set_temp(hass, "sensor.room_a_temp", 65.0)
+    await _set_temp(hass, "sensor.room_b_temp", 60.0)  # waiting for heat
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+    assert coord.data.get("primary_contended")
+    sent = [
+        c.get("temperature") if c.get("temperature") is not None else c.get("target_temp_high")
+        for c in heads[0].calls
+    ]
+    sent = [v for v in sent if v is not None]
+    assert sent, "no cool setpoint was written"
+    assert min(sent) >= 61
 
 
 async def test_no_competition_keeps_single_step_bias(hass: HomeAssistant):

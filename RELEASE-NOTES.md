@@ -7,10 +7,12 @@ another room demands the OPPOSITE mode now finishes instead of tapering:
   room target), so the head keeps pulling hard through the tail instead of
   easing off near its own setpoint. Same exclusions as before: never heat, eco
   edges or emergency, and the room's vote/release still uses the real target.
-- The adaptive fan gets a FLOOR at the top stage while contended — during quiet
-  hours it is capped at High so a bedroom head never runs its top stage
-  mid-night. The floor only ever raises the adaptive choice; manual holds,
-  native-auto rooms and the satisfied/handback paths are untouched.
+- The adaptive fan gets a FLOOR at the top stage while contended; during quiet
+  hours the floor is capped at High, so contention never pushes a bedroom head
+  to its top stage mid-night. The floor only ever raises the adaptive choice —
+  the normal ladder is unchanged and may still reach Very High on its own when
+  the room is far from target, quiet hours or not. Manual holds, native-auto
+  rooms and the satisfied/handback paths are untouched.
 - Contention latches per engagement: a waiting room hovering at its drift
   boundary cannot flap the head setpoint. It clears when the room releases or
   the shared mode changes. With no competition, nothing changes — the room

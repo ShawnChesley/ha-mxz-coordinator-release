@@ -400,9 +400,10 @@ def quiet_hours_active(now_minutes: int, start: str, end: str) -> bool:
             return None
         try:
             hour, minute = int(parts[0]), int(parts[1])
+            second = int(parts[2]) if len(parts) == 3 else 0
         except ValueError:
             return None
-        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        if not (0 <= hour <= 23 and 0 <= minute <= 59 and 0 <= second <= 59):
             return None
         return 60 * hour + minute
 
