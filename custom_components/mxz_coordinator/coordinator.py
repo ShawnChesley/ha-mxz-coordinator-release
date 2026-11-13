@@ -74,6 +74,8 @@ from .const import (
     CONF_PRIMARY_STAGE,
     CONF_PRIMARY_VANE_HORIZONTAL,
     CONF_PRIMARY_VANE_VERTICAL,
+    CONF_QUIET_HOURS_END,
+    CONF_QUIET_HOURS_START,
     CONF_RESTING_MODE_BIAS,
     CONF_SECONDARY_CLIMATE,
     CONF_SECONDARY_CONTACTS,
@@ -91,6 +93,8 @@ from .const import (
     DEFAULT_INHIBIT_ACTION,
     DEFAULT_INHIBIT_ACTIVE_STATE,
     DEFAULT_MODE_HYSTERESIS,
+    DEFAULT_QUIET_HOURS_END,
+    DEFAULT_QUIET_HOURS_START,
     DEFAULT_RESTING_MODE_BIAS,
     DEFAULT_WINDOW_PAUSE_DELAY,
     DEMAND_NEUTRAL,
@@ -148,6 +152,7 @@ from .logic import (
     fan_for_delta,
     head_action,
     head_setpoint_target,
+    quiet_hours_active,
     room_call,
     season_lockouts,
     setpoints,
@@ -413,6 +418,13 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # the boost ladder and latch below stay in charge until a policy is set.
         self.fan = FanController(hass, self, entry.entry_id)
         self.notify_service: str | None = conf.get(CONF_NOTIFY_SERVICE) or None
+        # Contended finish (local fork): quiet-hours window and the per-zone
+        # contention latch (slugs of tight rooms another zone is waiting on).
+        self.quiet_hours: tuple[str, str] = (
+            str(conf.get(CONF_QUIET_HOURS_START, DEFAULT_QUIET_HOURS_START)),
+            str(conf.get(CONF_QUIET_HOURS_END, DEFAULT_QUIET_HOURS_END)),
+        )
+        self._contended: set[str] = set()
 
         # Unit-dependent tunables fall back to the system-unit profile default;
         # unit-free ones (hysteresis seconds, resting bias, fan boost) keep their
@@ -1289,6 +1301,38 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if any(engage not in valid_eng for engage in engages):
             return
 
+        # Contended finish (local fork): a tight-demand room that holds the
+        # shared mode while another room demands the OPPOSITE one finishes hard
+        # (deeper cool bias + fan floor) instead of tapering, so the compressor
+        # hands over sooner. Latched per engagement: a waiter hovering at its
+        # drift boundary must not flap the head setpoint. With no competition
+        # the room tapers as before.
+        _opposite = {MODE_COOL: MODE_HEAT, MODE_HEAT: MODE_COOL}.get(state)
+        _waiting = _opposite is not None and any(
+            plan.get(f"{z.slug}_demand") == _opposite for z in self.zones
+        )
+        _contended_now: set[str] = set()
+        for zone, engage in zip(self.zones, engages):
+            if zone.tight_demand and engage == state and (
+                _waiting or zone.slug in self._contended
+            ):
+                _contended_now.add(zone.slug)
+        for slug in _contended_now - self._contended:
+            _LOGGER.info(
+                "MXZ: %s contended — another room wants %s; finishing hard",
+                slug, _opposite,
+            )
+        for slug in self._contended - _contended_now:
+            _LOGGER.info("MXZ: %s contention cleared", slug)
+        self._contended = _contended_now
+        _quiet = quiet_hours_active(
+            dt_util.now().hour * 60 + dt_util.now().minute,
+            self.quiet_hours[0], self.quiet_hours[1],
+        )
+        plan["quiet_hours"] = _quiet
+        for slug in _contended_now:
+            plan[f"{slug}_contended"] = True
+
         for zone, engage in zip(self.zones, engages):
             if zone.climate_id in self._vane_kicks:
                 continue  # mid vane-kick: leave the head alone until it finishes
@@ -1318,6 +1362,7 @@ class MXZCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             sp_target = head_setpoint_target(
                 target=ztarget, mode=state, tight_demand=zone.tight_demand,
                 eco=zone_eco, emergency=emergency, celsius=self.celsius,
+                contended=zone.slug in self._contended,
             )
             low, high = setpoints(
                 mode=state,

@@ -192,6 +192,12 @@ DEFAULT_INHIBIT_ACTIVE_STATE = "on"  # grid sensors are often inverted -> "off"
 # "off_after_dry" idles in fan_only for a coil-dry period after ACTIVE COOLING
 # (heat leaves no wet coil), then powers off — so the coil isn't sealed wet.
 CONF_IDLE_ACTION = "idle_action"
+# Contended finish (local fork): quiet hours cap the contended fan floor at
+# High so a mid-night handover never runs a bedroom head at its top stage.
+CONF_QUIET_HOURS_START = "quiet_hours_start"
+CONF_QUIET_HOURS_END = "quiet_hours_end"
+DEFAULT_QUIET_HOURS_START = "19:30"
+DEFAULT_QUIET_HOURS_END = "07:00"
 IDLE_ACTION_FAN_ONLY = "fan_only"  # circulate (original behavior)
 IDLE_ACTION_OFF = "off"  # fan stops, vanes close
 IDLE_ACTION_OFF_AFTER_DRY = "off_after_dry"  # dry the coil first, then off

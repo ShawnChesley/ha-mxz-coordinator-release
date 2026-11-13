@@ -358,7 +358,14 @@ def priority_hold(
 
 
 def head_setpoint_target(
-    *, target: float, mode: str, tight_demand: bool, eco: bool, emergency: bool, celsius: bool
+    *,
+    target: float,
+    mode: str,
+    tight_demand: bool,
+    eco: bool,
+    emergency: bool,
+    celsius: bool,
+    contended: bool = False,
 ) -> float:
     """The target the head's setpoint is computed from (the room target is unchanged).
 
@@ -367,10 +374,44 @@ def head_setpoint_target(
     reaches its release point, so the shared compressor stays in cool. Only plain
     cooling is biased — never heat, eco protection edges or emergency operation.
     The demand vote and release always use the real room target.
+
+    ``contended`` (local fork): another room is waiting for the OPPOSITE shared
+    mode, so this room should finish, not lollygag. The cool bias deepens to two
+    steps (2 F / 1 C) so the head keeps pulling hard through the tail instead of
+    easing off near its own setpoint. Same exclusions as the one-step bias.
     """
     if tight_demand and mode == MODE_COOL and not eco and not emergency:
-        return target - (0.5 if celsius else 1.0)
+        step = 0.5 if celsius else 1.0
+        return target - (2 * step if contended else step)
     return target
+
+
+def quiet_hours_active(now_minutes: int, start: str, end: str) -> bool:
+    """True when the minute-of-day falls in the quiet window (may span midnight).
+
+    ``start``/``end`` are "HH:MM" (a trailing ":SS" from a time selector is
+    accepted). Equal or unparsable bounds disable quiet hours (never crash a
+    drive cycle over a config string).
+    """
+
+    def _minutes(value: str) -> int | None:
+        parts = str(value).strip().split(":")
+        if len(parts) not in (2, 3):
+            return None
+        try:
+            hour, minute = int(parts[0]), int(parts[1])
+        except ValueError:
+            return None
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            return None
+        return 60 * hour + minute
+
+    s, e = _minutes(start), _minutes(end)
+    if s is None or e is None or s == e:
+        return False
+    if s < e:
+        return s <= now_minutes < e
+    return now_minutes >= s or now_minutes < e
 
 
 def setpoints(

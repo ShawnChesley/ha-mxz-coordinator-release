@@ -197,7 +197,9 @@
           "zone_5_contacts": "Zone 5 window/door contacts",
           "zone_6_contacts": "Zone 6 window/door contacts",
           "zone_7_contacts": "Zone 7 window/door contacts",
-          "zone_8_contacts": "Zone 8 window/door contacts"
+          "zone_8_contacts": "Zone 8 window/door contacts",
+          "quiet_hours_start": "Quiet hours start (HH:MM)",
+          "quiet_hours_end": "Quiet hours end (HH:MM)"
         },
         "data_description": {
           "demand_threshold": "How far off target a room must be before the whole system may SWITCH between heating and cooling. Bigger = fewer mode changes. Most homes are fine with the default.",

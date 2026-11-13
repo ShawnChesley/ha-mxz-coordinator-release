@@ -1,3 +1,23 @@
+# 3.6.0 (pending release)
+
+**Contended finish.** A tight-demand room that holds the shared compressor while
+another room demands the OPPOSITE mode now finishes instead of tapering:
+
+- The tight-cool head bias deepens from one step to two (2 °F / 1 °C below the
+  room target), so the head keeps pulling hard through the tail instead of
+  easing off near its own setpoint. Same exclusions as before: never heat, eco
+  edges or emergency, and the room's vote/release still uses the real target.
+- The adaptive fan gets a FLOOR at the top stage while contended — during quiet
+  hours it is capped at High so a bedroom head never runs its top stage
+  mid-night. The floor only ever raises the adaptive choice; manual holds,
+  native-auto rooms and the satisfied/handback paths are untouched.
+- Contention latches per engagement: a waiting room hovering at its drift
+  boundary cannot flap the head setpoint. It clears when the room releases or
+  the shared mode changes. With no competition, nothing changes — the room
+  tapers exactly as in 3.5.1.
+- New options: "Quiet hours start/end" (HH:MM, default 19:30–07:00). Equal or
+  unparsable bounds disable quiet hours.
+
 # 3.5.1
 
 Everything since 3.4.2. Recovers the 3.5.1-rc.1 base that ran on Home Assistant
