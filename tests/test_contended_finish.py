@@ -281,20 +281,29 @@ async def test_zone_disable_mid_latch_clears(hass: HomeAssistant):
         assert "primary" in coord._contended
 
 
-async def test_emergency_heat_waiter_latches_contention(hass: HomeAssistant):
-    """An emergency-cold room is an opposing waiter like any other."""
-    heads, coord = await _contended_setup(hass)
+async def test_emergency_heat_overrides_priority_and_clears_latch(hass: HomeAssistant):
+    """Emergency heat overrides priority hold (logic.resolve_mode returns HEAT
+    first): the shared mode must flip at once and the cool latch must clear —
+    accepting continued cooling here could hide an emergency-priority
+    regression (ChatGPT review)."""
+    _heads, coord = await _contended_setup(hass)
+    # Ordinary contention first: b cold enough to demand heat, a keeps cooling.
+    await _set_temp(hass, "sensor.room_b_temp", 60.0)
+    await coord.async_refresh()
+    await hass.async_block_till_done()
+    assert coord.data["state"] == MODE_COOL
+    assert "primary" in coord._contended
+    # b falls below its emergency floor: emergency protection must activate,
+    # win over a's priority hold, and the cool latch must not survive.
     coord.zones[1].emergency_protect = True
+    coord.zones[1].emergency_floor = 55.0
     await _set_temp(hass, "sensor.room_b_temp", 45.0)
     await coord.async_refresh()
     await hass.async_block_till_done()
-    if coord.data["state"] == MODE_COOL:
-        # Priority hold lets a finish first; it must be finishing HARD.
-        assert "primary" in coord._contended
-        assert _cool_sp(heads[0]) == 61
-    else:
-        # Emergency flipped the mode immediately: the cool latch must be gone.
-        assert not coord._contended
+    assert coord.data["state"] == MODE_HEAT
+    assert coord.data[f"{coord.zones[1].slug}_emergency"] is True
+    assert not coord._contended
+    assert "primary_contended" not in coord.data
 
 
 async def test_contended_at_head_floor_never_sends_below_floor(hass: HomeAssistant):
