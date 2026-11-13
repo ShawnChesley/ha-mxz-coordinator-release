@@ -128,12 +128,19 @@ class RoomFanPolicy:
         allowed: bool = True,
         satisfied: bool = False,
         settings: AdaptiveSettings = DEFAULT_ADAPTIVE_SETTINGS,
+        floor: FanStage | None = None,
     ) -> FanDecision:
         """Choose an intended selected mode; never starts or enables a head.
 
         ``allowed`` is false for Off, pauses, unavailable heads and protections.
         Existing on/off, dry, drift and shared-mode logic belongs to the caller.
         Error is target-room in Heat and room-target in Cool, without rounding.
+
+        ``floor`` (local fork, contended finish): the adaptive ladder never
+        selects BELOW this stage — a room another zone is waiting on finishes
+        hard instead of tapering. It only ever raises the adaptive choice (a
+        person's hold, native-auto policy and the satisfied/handback paths are
+        untouched), and it bypasses the step-down dwell the way safety does.
         """
         if not math.isfinite(now):
             raise ValueError("Clock must be finite")
@@ -179,11 +186,20 @@ class RoomFanPolicy:
             and 0 <= now - self.stage_since < settings.boost_dwell_s
         ):
             wanted = previous
+        diagnostic = None
+        if floor is not None and _LADDER.index(wanted) < _LADDER.index(floor):
+            wanted = floor
+            diagnostic = "contended_floor"
         if wanted != previous or self.recovery_mode != mode:
             self.stage_since = now
         self.stage = wanted
         self.recovery_mode = mode
-        return FanDecision(wanted.value, "head" if wanted == FanStage.AUTO else "coordinator", wanted)
+        return FanDecision(
+            wanted.value,
+            "head" if wanted == FanStage.AUTO else "coordinator",
+            wanted,
+            diagnostic,
+        )
 
 
 def _token(value: str) -> str:

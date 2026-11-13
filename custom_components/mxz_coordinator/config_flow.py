@@ -40,6 +40,8 @@ from .const import (
     CONF_INHIBIT_ENTITY,
     CONF_MODE_HYSTERESIS,
     CONF_NOTIFY_SERVICE,
+    CONF_QUIET_HOURS_END,
+    CONF_QUIET_HOURS_START,
     CONF_RESTING_MODE_BIAS,
     CONF_WINDOW_PAUSE_DELAY,
     CONF_ZONES,
@@ -63,6 +65,8 @@ from .const import (
     DEFAULT_INHIBIT_ACTION,
     DEFAULT_INHIBIT_ACTIVE_STATE,
     DEFAULT_MODE_HYSTERESIS,
+    DEFAULT_QUIET_HOURS_END,
+    DEFAULT_QUIET_HOURS_START,
     DEFAULT_RESTING_MODE_BIAS,
     DEFAULT_WINDOW_PAUSE_DELAY,
     DOMAIN,
@@ -329,6 +333,14 @@ def _tunables_schema(
                     CONF_COOL_LOCKOUT_CEILING, DEFAULT_COOL_LOCKOUT_CEILING
                 ),
             ): _num(),
+            vol.Optional(
+                CONF_QUIET_HOURS_START,
+                default=eff.get(CONF_QUIET_HOURS_START, DEFAULT_QUIET_HOURS_START),
+            ): selector.TextSelector(),
+            vol.Optional(
+                CONF_QUIET_HOURS_END,
+                default=eff.get(CONF_QUIET_HOURS_END, DEFAULT_QUIET_HOURS_END),
+            ): selector.TextSelector(),
             vol.Optional(
                 CONF_EXEMPT_COOL_STOP_OFFSET,
                 default=eff.get(

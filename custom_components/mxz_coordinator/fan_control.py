@@ -56,7 +56,7 @@ from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 
 from .const import MODE_COOL, MODE_FAN_ONLY, MODE_HEAT
-from .fan_policy import FanPolicy, RoomFanPolicy, supported_fan
+from .fan_policy import FanPolicy, FanStage, RoomFanPolicy, supported_fan
 from .field_journal import FieldJournal
 
 if TYPE_CHECKING:
@@ -438,8 +438,18 @@ class FanController:
                 # ...); a Celsius installation's error is converted, not reused.
                 if self.coord.celsius:
                     error *= 1.8
+            floor = None
+            if plan.get(f"{zone.slug}_contended") and not eco:
+                # Contended finish (local fork): another room is waiting for the
+                # opposite shared mode — hold the fan up through the tail. Quiet
+                # hours cap the floor at High so a bedroom never gets the top
+                # stage mid-night; the floor never lowers the adaptive choice.
+                floor = (
+                    FanStage.HIGH if plan.get("quiet_hours") else FanStage.VERY_HIGH
+                )
             decision = head.room.decide(
                 mode=act, error_f=error, now=time.monotonic(), satisfied=eco,
+                floor=floor,
             )
             decision = supported_fan(decision, list(modes))
             head.driver = decision.driver

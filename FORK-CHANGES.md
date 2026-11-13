@@ -30,6 +30,9 @@ Released as 3.5.1 (tag v3.5.1) from ShawnChesley/ha-mxz-coordinator-release for 
   widening that room's drift trades band width for fewer changeovers.
   While a tight room cools (not eco/emergency) its head is aimed one step below
   the room target (1 °F / 0.5 °C) so it reaches the release point.
+  When another room is waiting for the opposite shared mode ("contended"),
+  the bias deepens to two steps and the adaptive fan is floored at the top
+  stage (High during quiet hours) until the room releases.
 * Cool target near a two-setpoint head's floor is sent as a single setpoint when
   the firmware's minimum gap would otherwise raise it.
 * Adaptive fan error is converted to °F on Celsius installations.

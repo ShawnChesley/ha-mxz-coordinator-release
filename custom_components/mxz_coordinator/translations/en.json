@@ -61,7 +61,9 @@
           "inhibit_action": "What held heads do during a standby hold",
           "idle_action": "How a satisfied room's head idles",
           "coil_dry_minutes": "Coil-dry minutes (used only by 'Off after a coil-dry period')",
-          "window_pause_delay": "Window/door pause delay (seconds)"
+          "window_pause_delay": "Window/door pause delay (seconds)",
+          "quiet_hours_start": "Start of the nightly quiet window. While a contended room finishes, its fan floor is capped at High inside this window (instead of the top stage). This caps only the contention floor — normal adaptive fan behavior is unchanged.",
+          "quiet_hours_end": "End of the nightly quiet window (may be past midnight). Set start and end equal to disable quiet hours."
         },
         "data_description": {
           "demand_threshold": "How far off target a room must be before the whole system may SWITCH between heating and cooling. Bigger = fewer mode changes. Most homes are fine with the default.",
@@ -197,7 +199,9 @@
           "zone_5_contacts": "Zone 5 window/door contacts",
           "zone_6_contacts": "Zone 6 window/door contacts",
           "zone_7_contacts": "Zone 7 window/door contacts",
-          "zone_8_contacts": "Zone 8 window/door contacts"
+          "zone_8_contacts": "Zone 8 window/door contacts",
+          "quiet_hours_start": "Quiet hours start (HH:MM)",
+          "quiet_hours_end": "Quiet hours end (HH:MM)"
         },
         "data_description": {
           "demand_threshold": "How far off target a room must be before the whole system may SWITCH between heating and cooling. Bigger = fewer mode changes. Most homes are fine with the default.",
